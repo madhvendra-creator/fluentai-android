@@ -1,18 +1,23 @@
 package com.supereva.fluentai.ui.navigation
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.navigation.toRoute
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.supereva.fluentai.domain.session.model.Difficulty
@@ -26,6 +31,10 @@ import com.supereva.fluentai.domain.session.model.SessionMode
  */
 @Composable
 fun MainNavHost() {
+    val translationViewModel: com.supereva.fluentai.ui.translation.TranslationViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    val sourceLanguage by translationViewModel.sourceLanguage.collectAsState()
+    val targetLanguage by translationViewModel.targetLanguage.collectAsState()
+
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
@@ -68,7 +77,10 @@ fun MainNavHost() {
         NavHost(
             navController = navController,
             startDestination = BottomNavGraphRoute,
-            modifier = Modifier.padding(innerPadding)
+            modifier = Modifier.padding(innerPadding),
+            // Disable crossfade to prevent ExoPlayer SurfaceView glitches during tab switches
+            enterTransition = { EnterTransition.None },
+            exitTransition = { ExitTransition.None }
         ) {
             bottomNavGraph(
                 onNavigateToSession = { topicId ->
@@ -79,8 +91,47 @@ fun MainNavHost() {
                             sessionMode = SessionMode.AI.name
                         )
                     )
+                },
+                onNavigateToActiveTranslation = {
+                    navController.navigate(ActiveTranslationRoute)
                 }
             )
+
+            composable<ActiveTranslationRoute> {
+                com.supereva.fluentai.ui.translation.ActiveTranslationScreen(
+                    sourceLanguage = sourceLanguage,
+                    targetLanguage = targetLanguage,
+                    onBack = { navController.popBackStack() },
+                    onOpenLanguagePicker = { isSource ->
+                        navController.navigate(LanguagePickerRoute(isSource))
+                    },
+                    onSwapLanguages = { translationViewModel.swapLanguages() },
+                    onStartPracticeCall = { src, tgt ->
+                        navController.navigate(
+                            SpeakingSessionRoute(
+                                topicId = "translation_practice",
+                                difficulty = Difficulty.BEGINNER.name,
+                                sessionMode = SessionMode.TRANSLATION_PRACTICE.name,
+                                sourceLang = src,
+                                targetLang = tgt
+                            )
+                        )
+                    }
+                )
+            }
+
+            composable<LanguagePickerRoute> { backStackEntry ->
+                val route = backStackEntry.toRoute<LanguagePickerRoute>()
+                com.supereva.fluentai.ui.translation.LanguagePickerScreen(
+                    isSource = route.isSource,
+                    currentSelectedLanguage = if (route.isSource) sourceLanguage else targetLanguage,
+                    onBack = { navController.popBackStack() },
+                    onLanguageSelected = { language ->
+                        translationViewModel.setLanguage(route.isSource, language)
+                        navController.popBackStack()
+                    }
+                )
+            }
 
             speakingSessionGraph(
                 onBack = { navController.popBackStack() }
@@ -99,7 +150,7 @@ private data class BottomNavItem<T : Any>(
 
 private val bottomNavItems = listOf(
     BottomNavItem(HomeRoute, "Home", Icons.Default.Home),
-    BottomNavItem(LearnUnitsRoute, "Learn", Icons.Outlined.PlayArrow),
+    BottomNavItem(TranslationRoute, "Translate", Icons.Default.Translate),
     BottomNavItem(ProgressRoute, "Progress", Icons.Default.Star),
     BottomNavItem(MembershipRoute, "Premium", Icons.Outlined.Info)
 )
