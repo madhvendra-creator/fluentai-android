@@ -12,6 +12,7 @@ import com.supereva.fluentai.domain.session.model.Difficulty
 import com.supereva.fluentai.domain.session.model.SessionTurn
 import com.supereva.fluentai.domain.session.model.TurnRole
 import com.supereva.fluentai.domain.usecase.ProcessSpeechUseCase
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -406,6 +407,8 @@ class SpeakingSessionViewModel(
                     coordinator.transitionTo(SessionState.Listening)
                 }
 
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 coordinator.transitionTo(SessionState.Error(e.message ?: "Unknown error", e))
             }
