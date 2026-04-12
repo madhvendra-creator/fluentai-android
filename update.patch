@@ -1,0 +1,68 @@
+--- app/src/main/java/com/supereva/fluentai/ui/practice/SpeakingSessionViewModel.kt
++++ app/src/main/java/com/supereva/fluentai/ui/practice/SpeakingSessionViewModel.kt
+@@ -107,35 +107,37 @@
+                 coordinator.transitionTo(SessionState.Error("Failed to start recording: ${e.localizedMessage}"))
+             }
+         } else {
+             // ── Classic fallback path ───────────────────────────────────
+             viewModelScope.launch {
+-                // Loop to handle pauses if user hasn't explicitly stopped recording
+-                while (isActive && coordinator.sessionState.value is SessionState.Listening) {
+-                    try {
+-                        speechRepository.startListening().collect { result ->
+-                            when (result) {
+-                                is com.supereva.fluentai.domain.repository.SpeechResult.Partial -> {
+-                                    val currentAcc = accumulatedTranscript.toString()
+-                                    _partialTranscript.value = if (currentAcc.isNotEmpty()) "$currentAcc\n${result.text}" else result.text
+-                                }
+-                                is com.supereva.fluentai.domain.repository.SpeechResult.VolumeUpdate -> {
+-                                    _currentVolume.value = result.rmsdB
+-                                }
+-                                is com.supereva.fluentai.domain.repository.SpeechResult.Final -> {
+-                                    if (result.text.isNotEmpty()) {
+-                                        if (accumulatedTranscript.isNotEmpty()) accumulatedTranscript.append("\n")
+-                                        accumulatedTranscript.append(result.text)
+-                                        _partialTranscript.value = accumulatedTranscript.toString()
+-                                    }
+-                                }
+-                                is com.supereva.fluentai.domain.repository.SpeechResult.Error -> {
+-                                    // Optionally show errors or ignore to let loop retry
+-                                }
+-                            }
+-                        }
+-                    } catch (e: Exception) {
+-                        e.printStackTrace()
+-                    }
+-                }
++               // Loop indefinitely as long as coordinate state allows for it explicitly.
++               // Only stop if the scope dies or manually transitioned.
++               while (isActive && coordinator.sessionState.value is SessionState.Listening) {
++                   try {
++                       speechRepository.startListening().collect { result ->
++                           when (result) {
++                               is com.supereva.fluentai.domain.repository.SpeechResult.Partial -> {
++                                   val currentAcc = accumulatedTranscript.toString().trim()
++                                   _partialTranscript.value = if (currentAcc.isNotEmpty()) "$currentAcc\n${result.text}" else result.text
++                               }
++                               is com.supereva.fluentai.domain.repository.SpeechResult.VolumeUpdate -> {
++                                   _currentVolume.value = result.rmsdB
++                               }
++                               is com.supereva.fluentai.domain.repository.SpeechResult.Final -> {
++                                   if (result.text.isNotBlank()) {
++                                       if (accumulatedTranscript.isNotEmpty()) accumulatedTranscript.append(" ")
++                                       accumulatedTranscript.append(result.text.trim())
++                                       _partialTranscript.value = accumulatedTranscript.toString()
++                                   }
++                               }
++                               is com.supereva.fluentai.domain.repository.SpeechResult.Error -> {
++                                    // ignore 
++                               }
++                           }
++                       }
++                   } catch (e: Exception) {
++                       e.printStackTrace()
++                       break
++                   }
++               }
+             }
+         }

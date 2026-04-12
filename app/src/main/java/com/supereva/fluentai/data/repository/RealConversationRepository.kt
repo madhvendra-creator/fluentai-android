@@ -1,29 +1,27 @@
 package com.supereva.fluentai.data.repository
 
-import com.supereva.fluentai.domain.model.ConversationReply
 import com.supereva.fluentai.domain.repository.ConversationRepository
-import com.supereva.fluentai.domain.session.model.SessionTurn
-import com.supereva.fluentai.domain.session.model.TurnRole
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
+import okhttp3.Response
+import okhttp3.sse.EventSource
+import okhttp3.sse.EventSourceListener
+import okhttp3.sse.EventSources
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * [ConversationRepository] backed by the OpenAI Chat Completions API.
+ * [ConversationRepository] backed by the Fastify backend SSE endpoint.
  *
- * Builds a multi-turn message array from the [sessionHistory] so
- * the model has full context when generating its follow-up reply.
- *
- * No Android framework dependencies — uses OkHttp + org.json only.
+ * Connects to the `/chat/reply` endpoint and streams the reply word-by-word.
  */
 class RealConversationRepository(
-    private val apiKey: String
+    private val authManager: com.supereva.fluentai.domain.auth.AuthManager
 ) : ConversationRepository {
 
     private val client = OkHttpClient.Builder()
@@ -31,80 +29,68 @@ class RealConversationRepository(
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    override suspend fun generateReply(
+    private val eventSourceFactory = EventSources.createFactory(client)
+
+    override suspend fun streamReply(
+        sessionId: String,
         topicId: String,
         userText: String,
         correctedText: String,
-        sessionHistory: List<SessionTurn>
-    ): ConversationReply {
-        return withContext(Dispatchers.IO) {
+        isAutocorrectEnabled: Boolean
+    ): Flow<String> = callbackFlow {
+        
+        val body = JSONObject().apply {
+            put("sessionId", sessionId)
+            put("topicId", topicId) // CRITICAL: Added this so backend knows the context
+            put("message", userText)
+            put("correctedText", correctedText)
+            put("isAutocorrectEnabled", isAutocorrectEnabled)
+        }
 
-            val topicLabel = topicId.replace("_", " ")
+        val token = authManager.getAuthToken() ?: authManager.authenticateDevice()
 
-            val (persona, contextDescription) = when (topicId) {
-                "ordering_food" -> "Polite Waiter" to "You are a polite waiter taking an order at a nice restaurant."
-                "daily_life" -> "Helpful Neighbor" to "You are a friendly neighbor chatting casually in the hallway."
-                else -> "Friendly English Tutor" to "You are a patient and helpful English practice partner."
+        // Connect to local Fastify server
+        val request = Request.Builder()
+            .url("https://fluentai-backend-production-6a57.up.railway.app/chat/reply")
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Accept", "text/event-stream")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        val eventSource = eventSourceFactory.newEventSource(request, object : EventSourceListener() {
+            override fun onOpen(eventSource: EventSource, response: Response) {
+                super.onOpen(eventSource, response)
+                android.util.Log.d("SSE", "Connection opened")
             }
 
-            val systemPrompt = """
-                $contextDescription The topic is "$topicLabel".
-                Act as a $persona.
-                Continue the conversation naturally based on what the user said.
-                Rules:
-                - Reply in 1-3 short sentences.
-                - Ask a follow-up question to keep the conversation going.
-                - Use simple, clear English appropriate for a language learner.
-                - Do NOT correct grammar — that is handled separately.
-                - Do NOT use JSON — reply with plain text only.
-            """.trimIndent()
-
-            val messagesArray = JSONArray().apply {
-                // System prompt
-                put(JSONObject().apply {
-                    put("role", "system")
-                    put("content", systemPrompt)
-                })
-
-                // Current user turn (use corrected text for better context)
-                put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", correctedText)
-                })
+            override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
+                super.onEvent(eventSource, id, type, data)
+                try {
+                    val json = JSONObject(data)
+                    if (json.has("text")) {
+                        val text = json.getString("text")
+                        trySend(text)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("SSE", "Error parsing chunk", e)
+                }
             }
 
-            val body = JSONObject().apply {
-                put("model", "gpt-4o-mini")
-                put("messages", messagesArray)
-                put("temperature", 0.7)
-                put("max_tokens", 150)
+            override fun onClosed(eventSource: EventSource) {
+                super.onClosed(eventSource)
+                android.util.Log.d("SSE", "Connection closed")
+                close()
             }
 
-            val request = Request.Builder()
-                .url("https://api.openai.com/v1/chat/completions")
-                .addHeader("Authorization", "Bearer $apiKey")
-                .addHeader("Content-Type", "application/json")
-                .post(body.toString().toRequestBody("application/json".toMediaType()))
-                .build()
-
-            val response = client.newCall(request).execute()
-
-            if (!response.isSuccessful) {
-                throw Exception("OpenAI API error: ${response.code}")
+            override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
+                super.onFailure(eventSource, t, response)
+                android.util.Log.e("SSE", "Connection failed", t)
+                close(t)
             }
+        })
 
-            val responseBody = response.body?.string()
-                ?: throw Exception("Empty response from OpenAI")
-
-            val json = JSONObject(responseBody)
-            val aiText = json
-                .getJSONArray("choices")
-                .getJSONObject(0)
-                .getJSONObject("message")
-                .getString("content")
-                .trim()
-
-            ConversationReply(aiText = aiText)
+        awaitClose {
+            eventSource.cancel()
         }
     }
 }

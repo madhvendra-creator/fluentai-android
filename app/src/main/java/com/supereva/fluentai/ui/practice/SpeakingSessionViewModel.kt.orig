@@ -1,0 +1,351 @@
+package com.supereva.fluentai.ui.practice
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.supereva.fluentai.di.SessionServiceLocator
+import com.supereva.fluentai.domain.ai.AiConversationEngine
+import com.supereva.fluentai.domain.repository.ConversationRepository
+import com.supereva.fluentai.domain.session.SessionState
+import com.supereva.fluentai.domain.session.SpeakingSessionCoordinator
+import com.supereva.fluentai.domain.session.model.Difficulty
+import com.supereva.fluentai.domain.session.model.SessionTurn
+import com.supereva.fluentai.domain.session.model.SpeakingSession
+import com.supereva.fluentai.domain.session.model.TurnRole
+import com.supereva.fluentai.domain.usecase.ProcessSpeechUseCase
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.File
+
+/**
+ * Thin orchestrator that bridges the domain [SpeakingSessionCoordinator]
+ * with the Compose UI layer.
+ *
+ * **Dual-path audio processing:**
+ * - When [aiEngine] is non-null → streaming path.
+ * - When [aiEngine] is null → classic fallback:
+ *   1. [ProcessRecordingUseCase] transcribes + analyses.
+ *   2. Correction turn appended.
+ *   3. [ConversationRepository] generates a follow-up reply.
+ *   4. AI conversation turn appended.
+ */
+class SpeakingSessionViewModel(
+    private val coordinator: SpeakingSessionCoordinator,
+    private val aiEngine: AiConversationEngine?,
+    private val processSpeechUseCase: ProcessSpeechUseCase,
+    private val conversationRepository: ConversationRepository,
+    private val speechRepository: com.supereva.fluentai.domain.repository.SpeechRepository,
+    private val audioRecorder: com.supereva.fluentai.data.audio.AudioRecorder
+) : ViewModel() {
+
+    // ── UI State ────────────────────────────────────────────────────────
+
+    private val _currentVolume = kotlinx.coroutines.flow.MutableStateFlow(0f)
+    private var accumulatedTranscript = java.lang.StringBuilder()
+    private val _partialTranscript = kotlinx.coroutines.flow.MutableStateFlow("")
+
+    val uiState: StateFlow<SessionUiState> =
+        combine(
+            coordinator.sessionState,
+            coordinator.currentSession,
+            _currentVolume,
+            _partialTranscript
+        ) { state, session, volume, partial ->
+            mapToUiState(state, session, volume, partial)
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = SessionUiState()
+        )
+
+    // ── Public actions (called by PracticeScreen) ───────────────────────
+
+    fun startSession(
+        topicId: String = "free_talk",
+        difficulty: Difficulty = Difficulty.BEGINNER
+    ) {
+        coordinator.startSession(topicId, difficulty, viewModelScope)
+
+        // Streaming path: subscribe to AI engine if available
+        aiEngine?.let { engine ->
+            coordinator.subscribeToAiEngine(engine, viewModelScope)
+            viewModelScope.launch {
+                engine.startSession(topicId, difficulty)
+            }
+        }
+    }
+
+    fun onRecordingStarted() {
+        accumulatedTranscript.clear()
+        _partialTranscript.value = ""
+        coordinator.transitionTo(SessionState.Listening)
+
+        if (aiEngine != null) {
+            // ── Streaming path ──────────────────────────────────────────
+            try {
+                audioRecorder.startRecording()
+                viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val bufferSize = audioRecorder.minBufferSize
+                    val buffer = ByteArray(bufferSize)
+
+                    while (isActive) {
+                        val readBytes = audioRecorder.read(buffer, bufferSize)
+                        if (readBytes > 0) {
+                            // Send only valid bytes
+                            val chunk = if (readBytes == bufferSize) buffer else buffer.copyOfRange(0, readBytes)
+                            aiEngine.sendStreamChunk(chunk)
+                            
+                            // Calculate RMS for volume visualization
+                            val rmsDb = calculateRms(chunk)
+                            _currentVolume.value = rmsDb 
+                        } else {
+                            // Recorder stopped or error
+                            break
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                coordinator.transitionTo(SessionState.Error("Failed to start recording: ${e.localizedMessage}"))
+            }
+        } else {
+            // ── Classic fallback path ───────────────────────────────────
+            viewModelScope.launch {
+                // Loop to handle pauses if user hasn't explicitly stopped recording
+                while (isActive && coordinator.sessionState.value is SessionState.Listening) {
+                    try {
+                        speechRepository.startListening().collect { result ->
+                            when (result) {
+                                is com.supereva.fluentai.domain.repository.SpeechResult.Partial -> {
+                                    val currentAcc = accumulatedTranscript.toString()
+                                    _partialTranscript.value = if (currentAcc.isNotEmpty()) "$currentAcc\n${result.text}" else result.text
+                                }
+                                is com.supereva.fluentai.domain.repository.SpeechResult.VolumeUpdate -> {
+                                    _currentVolume.value = result.rmsdB
+                                }
+                                is com.supereva.fluentai.domain.repository.SpeechResult.Final -> {
+                                    if (result.text.isNotEmpty()) {
+                                        if (accumulatedTranscript.isNotEmpty()) accumulatedTranscript.append("\n")
+                                        accumulatedTranscript.append(result.text)
+                                        _partialTranscript.value = accumulatedTranscript.toString()
+                                    }
+                                }
+                                is com.supereva.fluentai.domain.repository.SpeechResult.Error -> {
+                                    // Optionally show errors or ignore to let loop retry
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+        }
+    }
+
+    fun onRecordingStopped() {
+        if (aiEngine != null) {
+            audioRecorder.stopRecording()
+        } else {
+            speechRepository.stopListening()
+            
+            val finalText = accumulatedTranscript.toString()
+            if (finalText.isNotBlank()) {
+                onSpeechFinalized(finalText)
+            } else {
+                coordinator.transitionTo(SessionState.Listening) // Revert if empty
+            }
+        }
+        _currentVolume.value = 0f
+        _partialTranscript.value = ""
+    }
+
+    private fun onSpeechFinalized(transcript: String) {
+        coordinator.transitionTo(SessionState.Processing)
+        _partialTranscript.value = ""
+        viewModelScope.launch {
+            try {
+                // ── Classic fallback path ───────────────────────────
+
+                // Step 1: Analyse text directly
+                val result = processSpeechUseCase(transcript)
+
+                android.util.Log.d("AI_RESULT", "Corrected = ${result.correctedText}")
+                android.util.Log.d("AI_RESULT", "Feedback = ${result.feedback}")
+                android.util.Log.d("AI_RESULT", "Score = ${result.score}")
+
+                // Step 2: Append user turn (transcript + correction)
+                coordinator.appendUserTurn(
+                    SessionTurn(
+                        role = TurnRole.USER,
+                        transcript = result.transcript,
+                        correctedText = result.correctedText,
+                        score = result.score
+                    )
+                )
+
+                // Step 3: Append correction turn (feedback + score)
+                coordinator.appendAiTurn(
+                    SessionTurn(
+                        role = TurnRole.AI,
+                        transcript = result.correctedText,
+                        correctedText = result.correctedText,
+                        feedback = result.feedback,
+                        score = result.score
+                    )
+                )
+
+                // Step 3.5: Signal user turn fully processed → AiThinking
+                coordinator.onUserTurnProcessed()
+
+                // Step 4: Generate conversational AI reply
+                val topicId = coordinator.currentSession.value?.topicId ?: "free_talk"
+                val history = coordinator.currentSession.value?.messages.orEmpty()
+
+                // Step 4: Signal reply generation starting → AiSpeaking
+                coordinator.onReplyGenerationStarted()
+
+                val sessionId = coordinator.currentSession.value?.sessionId ?: "session-123"
+
+                val replyFlow = conversationRepository.streamReply(
+                    sessionId = sessionId,
+                    topicId = topicId,
+                    userText = result.transcript,
+                    correctedText = result.correctedText
+                )
+
+                // Step 5: Stream AI conversation turn chunk-by-chunk
+                var accumulatedText = ""
+                
+                // Collect the stream
+                replyFlow.collect { chunkText ->
+                    val cleanText = chunkText.trim()
+                    if (cleanText.isNotEmpty()) {
+                        // Append and update
+                        accumulatedText += if (accumulatedText.isEmpty()) cleanText else " $cleanText"
+                        
+                        // Send partial chunk
+                        coordinator.appendOrUpdateAiTurn(
+                            com.supereva.fluentai.domain.ai.AiChunk(
+                                textPartial = accumulatedText,
+                                isFinal = false
+                            )
+                        )
+                    }
+                }
+
+                // Final chunk to signal completion and move state back to Listening/Idle
+                coordinator.appendOrUpdateAiTurn(
+                    com.supereva.fluentai.domain.ai.AiChunk(
+                        textPartial = accumulatedText,
+                        isFinal = true
+                    )
+                )
+                coordinator.speakText(accumulatedText)
+                coordinator.transitionTo(SessionState.Listening)
+
+            } catch (e: Exception) {
+                coordinator.transitionTo(
+                    SessionState.Error(
+                        message = e.message ?: "Unknown error",
+                        cause = e
+                    )
+                )
+            }
+        }
+    }
+
+    fun onMicTappedDuringAiSpeaking() {
+        coordinator.interruptAiSpeaking()
+    }
+
+    fun speakWord(word: String) {
+        viewModelScope.launch {
+            coordinator.speakText(word)
+        }
+    }
+
+    fun endSession() {
+        viewModelScope.launch {
+            aiEngine?.endSession()
+        }
+        coordinator.endSession()
+    }
+
+    fun onScreenLeft() {
+        viewModelScope.launch {
+            aiEngine?.endSession()
+        }
+        coordinator.endSession()
+    }
+
+
+
+    private fun calculateRms(chunk: ByteArray): Float {
+        var sum = 0.0
+        // Iterate over the byte array, combining pairs of bytes into short samples (PCM 16-bit)
+        for (i in chunk.indices step 2) {
+            if (i + 1 < chunk.size) {
+                // Little Endian: low byte first, high byte second
+                val low = chunk[i].toInt() and 0xFF
+                val high = chunk[i + 1].toInt() shl 8
+                val sample = (high or low).toShort().toFloat()
+                sum += sample * sample
+            }
+        }
+        val sampleCount = chunk.size / 2
+        if (sampleCount == 0) return -100f
+
+        val mean = sum / sampleCount
+        val rms = kotlin.math.sqrt(mean)
+        return if (rms > 0) (20 * kotlin.math.log10(rms)).toFloat() else -100f
+    }
+
+    // ── State mapping (pure function) ───────────────────────────────────
+
+    private fun mapToUiState(
+        state: SessionState,
+        session: SpeakingSession?,
+        volume: Float,
+        partialTranscript: String
+    ): SessionUiState {
+        return SessionUiState(
+            topicId = session?.topicId.orEmpty(),
+            isSessionActive = session != null,
+            isListening = state is SessionState.Listening,
+            isProcessing = state is SessionState.Processing,
+            isAiThinking = state is SessionState.AiThinking,
+            isAiSpeaking = state is SessionState.AiSpeaking,
+            isUserInterrupting = state is SessionState.UserInterrupting,
+            isCompleted = state is SessionState.Completed,
+            messages = session?.messages.orEmpty(),
+            averageScore = session?.scoreProgress?.averageScore ?: 0.0,
+            turnCount = session?.scoreProgress?.turnCount ?: 0,
+            currentVolume = volume,
+            error = (state as? SessionState.Error)?.message,
+            partialTranscript = partialTranscript
+        )
+    }
+
+    // ── Factory ─────────────────────────────────────────────────────────
+
+    companion object {
+        val Factory: ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    return SpeakingSessionViewModel(
+                        coordinator = SessionServiceLocator.coordinator,
+                        aiEngine = SessionServiceLocator.aiEngine,
+                        processSpeechUseCase = SessionServiceLocator.processSpeechUseCase,
+                        conversationRepository = SessionServiceLocator.conversationRepository,
+                        speechRepository = SessionServiceLocator.speechRepository,
+                        audioRecorder = SessionServiceLocator.audioRecorder
+                    ) as T
+                }
+            }
+    }
+}

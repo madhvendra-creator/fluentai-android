@@ -1,5 +1,6 @@
 package com.supereva.fluentai.ui.home
 
+import kotlinx.coroutines.Dispatchers
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -45,6 +46,24 @@ class HomeViewModel(
     val navigationEvent: Flow<HomeNavigationEvent> = _navigationEvent.receiveAsFlow()
 
     init {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Warm up Railway container
+                SessionServiceLocator.okHttpClient.newCall(
+                    okhttp3.Request.Builder()
+                        .url("https://fluentai-backend-production-6a57.up.railway.app/health")
+                        .build()
+                ).execute().close()
+            } catch (e: Exception) { /* silent warm-up, ignore errors */ }
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Pre-fetch JWT so it is cached before practice screen opens
+                SessionServiceLocator.authManager.authenticateDevice()
+            } catch (e: Exception) { /* silent, will retry when needed */ }
+        }
+
         loadTopics()
     }
 
@@ -61,12 +80,16 @@ class HomeViewModel(
         when (action) {
             is HomeAction.StartAiPractice -> startSession(
                 topicId = "free_talk",
+                firstQuestion = "Hi! Let's practice speaking. Tell me about whatever is on your mind today.",
                 difficulty = Difficulty.BEGINNER
             )
             is HomeAction.OpenTopic -> {
                 val difficulty = resolveDifficulty(action.topicId)
+                val question = _uiState.value.topicCategories.values.flatten()
+                    .firstOrNull { it.id == action.topicId }?.firstQuestion ?: "Hi! Let's start practicing."
                 startSession(
                     topicId = action.topicId,
+                    firstQuestion = question,
                     difficulty = difficulty
                 )
             }
@@ -75,8 +98,8 @@ class HomeViewModel(
 
     // ── Internals ───────────────────────────────────────────────────────
 
-    private fun startSession(topicId: String, difficulty: Difficulty) {
-        coordinator.ensureFreshSession(topicId, difficulty, viewModelScope)
+    private fun startSession(topicId: String, firstQuestion: String, difficulty: Difficulty) {
+        coordinator.ensureFreshSession(topicId, firstQuestion, difficulty, viewModelScope)
         viewModelScope.launch {
             _navigationEvent.send(HomeNavigationEvent.NavigateToSession(topicId))
         }
@@ -128,7 +151,14 @@ class HomeViewModel(
         duration = "${durationMinutes} min",
         difficulty = difficulty.name.lowercase()
             .replaceFirstChar { it.uppercase() },
-        imageUrl = imageUrl
+        imageUrl = imageUrl,
+        firstQuestion = firstQuestion,
+        imageResId = imageResId ?: when {
+            id == "ji_02" || title.contains("Strength", ignoreCase = true) -> com.supereva.fluentai.R.drawable.strength
+            id == "ji_03" || title.contains("Behavioral", ignoreCase = true) || title.contains("Behavioural", ignoreCase = true) -> com.supereva.fluentai.R.drawable.behaviour
+            id == "ji_04" || title.contains("Salary", ignoreCase = true) -> com.supereva.fluentai.R.drawable.salary
+            else -> com.supereva.fluentai.R.drawable.introductionyourself
+        }
     )
 
     // ── Factory ─────────────────────────────────────────────────────────

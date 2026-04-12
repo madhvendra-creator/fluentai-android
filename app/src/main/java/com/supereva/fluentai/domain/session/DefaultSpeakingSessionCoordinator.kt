@@ -15,14 +15,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import java.util.UUID
 
 /**
  * Thread-safe, production-ready implementation of [SpeakingSessionCoordinator].
  *
  * Every mutation:
- * 1. Acquires [mutex] to serialise concurrent callers.
+ * 1. Uses `@Synchronized` on methods that perform read-modify-write operations.
  * 2. Produces an **immutable copy** of the session via [SpeakingSession.copy].
  * 3. Emits the new snapshot through [MutableStateFlow].
  *
@@ -38,7 +37,6 @@ class DefaultSpeakingSessionCoordinator(
     private val localHistoryRepository: com.supereva.fluentai.domain.repository.LocalHistoryRepository? = null
 ) : SpeakingSessionCoordinator {
 
-    private val mutex = Mutex()
     private val turnTakingEngine = TurnTakingEngine()
 
     private val _sessionState = MutableStateFlow<SessionState>(SessionState.Idle)
@@ -69,67 +67,56 @@ class DefaultSpeakingSessionCoordinator(
 
     // ── Lifecycle ────────────────────────────────────────────────────────
 
-    override fun startSession(topicId: String, difficulty: Difficulty, scope: CoroutineScope) {
-        val topicLabel = topicId.replace("_", " ")
-        val introText = "Hi! Let's start practicing English about $topicLabel. Tell me something about it."
+    @Synchronized
+    override fun startSession(topicId: String, firstQuestion: String, difficulty: Difficulty, scope: CoroutineScope) {
+        val introText = firstQuestion
 
-        mutate {
-            // Resilient: silently no-op if a session is already active.
-            if (_sessionState.value !is SessionState.Idle &&
-                _sessionState.value !is SessionState.Completed
-            ) return@mutate
+        // Resilient: silently no-op if a session is already active.
+        if (_sessionState.value !is SessionState.Idle &&
+            _sessionState.value !is SessionState.Completed
+        ) return
 
-            val introTurn = SessionTurn(
-                role = TurnRole.AI,
-                transcript = introText,
-                correctedText = introText
-            )
+        val introTurn = SessionTurn(
+            role = TurnRole.AI,
+            transcript = introText,
+            correctedText = introText
+        )
 
-            val session = SpeakingSession(
-                sessionId = UUID.randomUUID().toString(),
-                topicId = topicId,
-                difficulty = difficulty,
-                messages = listOf(introTurn)
-            )
+        val session = SpeakingSession(
+            sessionId = UUID.randomUUID().toString(),
+            topicId = topicId,
+            difficulty = difficulty,
+            messages = listOf(introTurn)
+        )
 
-            _currentSession.value = session
-            _sessionState.value = SessionState.AiSpeaking
-            sessionScope = scope
-        }
+        _currentSession.value = session
+        _sessionState.value = SessionState.AiSpeaking
+        sessionScope = scope
 
-        // Launch the simulated speaking delay outside the mutex
+        // Launch the actual TTS monitoring outside the lock
         introJob = scope.launch {
             ttsEngine?.speak(introText)
-            delay(INTRO_DELAY_MS)
-            mutate { _sessionState.value = SessionState.Listening }
-        }
-    }
-
-    override fun ensureFreshSession(topicId: String, difficulty: Difficulty, scope: CoroutineScope) {
-        mutate {
-            val current = _sessionState.value
-            if (current !is SessionState.Idle && current !is SessionState.Completed) {
-                // Tear down the in-flight session first
-                chunkCollectionJob?.cancel()
-                chunkCollectionJob = null
-                introJob?.cancel()
-                introJob = null
-                streamingJob?.cancel()
-                streamingJob = null
-                sessionScope = null
-                _sessionState.value = SessionState.Idle
-                _currentSession.value = null
+            
+            // 1. Wait for TTS engine to start (timeout after 2 seconds)
+            var waitStart = 0
+            while (ttsEngine != null && !ttsEngine.isSpeaking.value && waitStart < 2000) {
+                delay(50)
+                waitStart += 50
             }
+            // 2. Wait for TTS to finish speaking the entire sentence
+            while (ttsEngine != null && ttsEngine.isSpeaking.value) {
+                delay(100)
+            }
+            
+            _sessionState.value = SessionState.Listening
         }
-        // Now safe to start
-        startSession(topicId, difficulty, scope)
     }
 
-    private val coordinatorScope = CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
-
-    override fun endSession() {
-        var sessionToSave: SpeakingSession? = null
-        mutate {
+    @Synchronized
+    override fun ensureFreshSession(topicId: String, firstQuestion: String, difficulty: Difficulty, scope: CoroutineScope) {
+        val current = _sessionState.value
+        if (current !is SessionState.Idle && current !is SessionState.Completed) {
+            // Tear down the in-flight session first
             chunkCollectionJob?.cancel()
             chunkCollectionJob = null
             introJob?.cancel()
@@ -137,20 +124,38 @@ class DefaultSpeakingSessionCoordinator(
             streamingJob?.cancel()
             streamingJob = null
             sessionScope = null
-            ttsEngine?.stop()
-            val session = _currentSession.value ?: return@mutate
-            _sessionState.value = SessionState.Completed(session)
-            
-            // Capture session for saving outside the lock
-            sessionToSave = session
-             
+            _sessionState.value = SessionState.Idle
             _currentSession.value = null
         }
+        // Now safe to start
+        startSession(topicId, firstQuestion, difficulty, scope)
+    }
+
+    private val coordinatorScope = CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+
+    @Synchronized
+    override fun endSession() {
+        var sessionToSave: SpeakingSession? = null
+        chunkCollectionJob?.cancel()
+        chunkCollectionJob = null
+        introJob?.cancel()
+        introJob = null
+        streamingJob?.cancel()
+        streamingJob = null
+        sessionScope = null
+        ttsEngine?.stop()
+        val session = _currentSession.value ?: return
+        _sessionState.value = SessionState.Completed(session)
+        
+        // Capture session for saving outside the lock
+        sessionToSave = session
+         
+        _currentSession.value = null
 
         // Save session to local database
-        sessionToSave?.let { session ->
+        sessionToSave?.let { s ->
             coordinatorScope.launch {
-                localHistoryRepository?.saveSession(session)
+                localHistoryRepository?.saveSession(s)
             }
         }
     }
@@ -182,51 +187,48 @@ class DefaultSpeakingSessionCoordinator(
 
     // ── Turn management ─────────────────────────────────────────────────
 
+    @Synchronized
     override fun appendUserTurn(turn: SessionTurn) {
-        mutate {
-            val session = requireActiveSession()
-            val updatedMessages = session.messages + turn
-            val updatedScore = recalculateScore(session.scoreProgress, turn)
+        val session = requireActiveSession()
+        val updatedMessages = session.messages + turn
+        val updatedScore = recalculateScore(session.scoreProgress, turn)
 
-            _currentSession.value = session.copy(
-                messages = updatedMessages,
-                scoreProgress = updatedScore,
-                updatedAt = System.currentTimeMillis()
-            )
-        }
+        _currentSession.value = session.copy(
+            messages = updatedMessages,
+            scoreProgress = updatedScore,
+            updatedAt = System.currentTimeMillis()
+        )
     }
 
+    @Synchronized
     override fun appendAiTurn(turn: SessionTurn) {
-        mutate {
-            val session = requireActiveSession()
-            val updatedMessages = session.messages + turn
+        val session = requireActiveSession()
+        val updatedMessages = session.messages + turn
 
-            _currentSession.value = session.copy(
-                messages = updatedMessages,
-                updatedAt = System.currentTimeMillis()
-            )
-        }
+        _currentSession.value = session.copy(
+            messages = updatedMessages,
+            updatedAt = System.currentTimeMillis()
+        )
     }
 
+    @Synchronized
     override fun streamAiTurn(turn: SessionTurn) {
         val scope = sessionScope ?: error("No session scope. Call startSession() first.")
         val words = turn.transcript.split(" ").filter { it.isNotEmpty() }
         if (words.isEmpty()) return
 
         // Append the initial turn with just the first word and isStreaming = true
-        mutate {
-            val session = requireActiveSession()
-            val streamingTurn = turn.copy(
-                transcript = words.first(),
-                correctedText = words.first(),
-                isStreaming = true
-            )
-            _currentSession.value = session.copy(
-                messages = session.messages + streamingTurn,
-                updatedAt = System.currentTimeMillis()
-            )
-            _sessionState.value = SessionState.AiSpeaking
-        }
+        val session = requireActiveSession()
+        val streamingTurn = turn.copy(
+            transcript = words.first(),
+            correctedText = words.first(),
+            isStreaming = true
+        )
+        _currentSession.value = session.copy(
+            messages = session.messages + streamingTurn,
+            updatedAt = System.currentTimeMillis()
+        )
+        _sessionState.value = SessionState.AiSpeaking
 
         // Stream remaining words word-by-word + start TTS
         streamingJob?.cancel()
@@ -236,10 +238,10 @@ class DefaultSpeakingSessionCoordinator(
 
             for (i in 1 until words.size) {
                 delay(STREAM_WORD_DELAY_MS)
-                mutate {
-                    val session = _currentSession.value ?: return@mutate
-                    val messages = session.messages.toMutableList()
-                    val last = messages.lastOrNull() ?: return@mutate
+                synchronized(this@DefaultSpeakingSessionCoordinator) {
+                    val currentSession = _currentSession.value ?: return@synchronized
+                    val messages = currentSession.messages.toMutableList()
+                    val last = messages.lastOrNull() ?: return@synchronized
 
                     val partialText = words.subList(0, i + 1).joinToString(" ")
                     val isLast = (i == words.size - 1)
@@ -250,7 +252,7 @@ class DefaultSpeakingSessionCoordinator(
                         isStreaming = !isLast
                     )
 
-                    _currentSession.value = session.copy(
+                    _currentSession.value = currentSession.copy(
                         messages = messages,
                         updatedAt = System.currentTimeMillis()
                     )
@@ -263,12 +265,12 @@ class DefaultSpeakingSessionCoordinator(
 
             // Handle single-word edge case
             if (words.size == 1) {
-                mutate {
-                    val session = _currentSession.value ?: return@mutate
-                    val messages = session.messages.toMutableList()
-                    val last = messages.lastOrNull() ?: return@mutate
+                synchronized(this@DefaultSpeakingSessionCoordinator) {
+                    val currentSession = _currentSession.value ?: return@synchronized
+                    val messages = currentSession.messages.toMutableList()
+                    val last = messages.lastOrNull() ?: return@synchronized
                     messages[messages.lastIndex] = last.copy(isStreaming = false)
-                    _currentSession.value = session.copy(
+                    _currentSession.value = currentSession.copy(
                         messages = messages,
                         updatedAt = System.currentTimeMillis()
                     )
@@ -278,64 +280,58 @@ class DefaultSpeakingSessionCoordinator(
         }
     }
 
+    @Synchronized
     override fun appendOrUpdateAiTurn(chunk: AiChunk) {
-        mutate {
-            val session = requireActiveSession()
-            val messages = session.messages.toMutableList()
-            val last = messages.lastOrNull()
+        val session = requireActiveSession()
+        val messages = session.messages.toMutableList()
+        val last = messages.lastOrNull()
 
-            if (last != null && last.role == TurnRole.AI && last.isStreaming) {
-                // Update the existing streaming turn in-place
-                messages[messages.lastIndex] = last.copy(
+        if (last != null && last.role == TurnRole.AI && last.isStreaming) {
+            // Update the existing streaming turn in-place
+            messages[messages.lastIndex] = last.copy(
+                transcript = chunk.textPartial,
+                correctedText = chunk.textPartial,
+                audioPath = chunk.audioPartialPath ?: last.audioPath,
+                isStreaming = !chunk.isFinal
+            )
+        } else {
+            // Start a new AI streaming turn
+            messages.add(
+                SessionTurn(
+                    role = TurnRole.AI,
                     transcript = chunk.textPartial,
                     correctedText = chunk.textPartial,
-                    audioPath = chunk.audioPartialPath ?: last.audioPath,
+                    audioPath = chunk.audioPartialPath,
                     isStreaming = !chunk.isFinal
                 )
-            } else {
-                // Start a new AI streaming turn
-                messages.add(
-                    SessionTurn(
-                        role = TurnRole.AI,
-                        transcript = chunk.textPartial,
-                        correctedText = chunk.textPartial,
-                        audioPath = chunk.audioPartialPath,
-                        isStreaming = !chunk.isFinal
-                    )
-                )
-            }
-
-            _currentSession.value = session.copy(
-                messages = messages,
-                updatedAt = System.currentTimeMillis()
             )
         }
+
+        _currentSession.value = session.copy(
+            messages = messages,
+            updatedAt = System.currentTimeMillis()
+        )
     }
 
     // ── Turn-taking ─────────────────────────────────────────────────────
 
     override fun onUserTurnProcessed() {
-        mutate {
-            _sessionState.value = turnTakingEngine.onUserTurnProcessed()
-        }
+        _sessionState.value = turnTakingEngine.onUserTurnProcessed()
     }
 
     override fun onReplyGenerationStarted() {
-        mutate {
-            _sessionState.value = turnTakingEngine.onReplyGenerationStarted()
-        }
+        _sessionState.value = turnTakingEngine.onReplyGenerationStarted()
     }
 
+    @Synchronized
     override fun interruptAiSpeaking() {
-        mutate {
-            val next = turnTakingEngine.onUserInterrupted(_sessionState.value) ?: return@mutate
-            _sessionState.value = next
-            streamingJob?.cancel()
-            streamingJob = null
-            ttsEngine?.stop()
-            // Transient signal emitted — immediately transition to Listening
-            _sessionState.value = turnTakingEngine.onInterruptionHandled()
-        }
+        val next = turnTakingEngine.onUserInterrupted(_sessionState.value) ?: return
+        _sessionState.value = next
+        streamingJob?.cancel()
+        streamingJob = null
+        ttsEngine?.stop()
+        // Transient signal emitted — immediately transition to Listening
+        _sessionState.value = turnTakingEngine.onInterruptionHandled()
     }
 
     override suspend fun speakText(text: String) {
@@ -346,28 +342,10 @@ class DefaultSpeakingSessionCoordinator(
     // ── State transitions ───────────────────────────────────────────────
 
     override fun transitionTo(state: SessionState) {
-        mutate {
-            _sessionState.value = state
-        }
+        _sessionState.value = state
     }
 
     // ── Internals ───────────────────────────────────────────────────────
-
-    /**
-     * Executes [block] under the [mutex] to guarantee thread safety.
-     *
-     * Uses [Mutex.tryLock] in a non-suspend wrapper so the public API
-     * stays synchronous (no `suspend`). For the domain layer this is
-     * acceptable because mutations are CPU-only — they never suspend.
-     */
-    private inline fun mutate(block: () -> Unit) {
-        // Fast-path: single-threaded callers acquire without contention.
-        // In multi-threaded scenarios the spin is bounded by the cost of
-        // an immutable copy (sub-microsecond).
-        synchronized(mutex) {
-            block()
-        }
-    }
 
     private fun requireActiveSession(): SpeakingSession {
         return _currentSession.value

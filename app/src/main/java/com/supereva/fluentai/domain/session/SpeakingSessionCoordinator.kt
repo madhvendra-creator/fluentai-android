@@ -35,7 +35,7 @@ interface SpeakingSessionCoordinator {
      * @param scope coroutine scope used for the intro-speaking delay.
      * If a session is already active this is a no-op (resilient).
      */
-    fun startSession(topicId: String, difficulty: Difficulty, scope: CoroutineScope)
+    fun startSession(topicId: String, firstQuestion: String, difficulty: Difficulty, scope: CoroutineScope)
 
     /**
      * Safely tear down any in-flight session, then start a fresh one.
@@ -45,7 +45,7 @@ interface SpeakingSessionCoordinator {
      *
      * @param scope coroutine scope used for the intro-speaking delay.
      */
-    fun ensureFreshSession(topicId: String, difficulty: Difficulty, scope: CoroutineScope)
+    fun ensureFreshSession(topicId: String, firstQuestion: String, difficulty: Difficulty, scope: CoroutineScope)
 
     /**
      * Append a user-produced turn to the active session.

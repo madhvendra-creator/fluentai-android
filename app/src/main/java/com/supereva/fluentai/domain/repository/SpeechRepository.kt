@@ -13,5 +13,6 @@ sealed class SpeechResult {
 interface SpeechRepository {
     fun startListening(language: String = "en-US"): Flow<SpeechResult>
     fun stopListening()
+    fun release()
     suspend fun transcribeAudio(file: File): String
 }

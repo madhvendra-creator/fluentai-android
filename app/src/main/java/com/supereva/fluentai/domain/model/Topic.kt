@@ -13,5 +13,7 @@ data class Topic(
     val category: String,
     val durationMinutes: Int,
     val difficulty: Difficulty,
-    val imageUrl: String = ""
+    val imageUrl: String = "",
+    val firstQuestion: String = "",
+    val imageResId: Int? = null
 )

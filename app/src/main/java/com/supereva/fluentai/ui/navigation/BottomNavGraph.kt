@@ -17,7 +17,8 @@ import com.supereva.fluentai.ui.home.HomeScreen
  * `hiltComposable` when Hilt is introduced.
  */
 fun NavGraphBuilder.bottomNavGraph(
-    onNavigateToSession: (topicId: String) -> Unit
+    onNavigateToSession: (topicId: String) -> Unit,
+    onNavigateToActiveTranslation: () -> Unit
 ) {
     navigation<BottomNavGraphRoute>(startDestination = HomeRoute) {
 
@@ -27,8 +28,10 @@ fun NavGraphBuilder.bottomNavGraph(
             )
         }
 
-        composable<LearnUnitsRoute> {
-            PlaceholderScreen(title = "Learn Units")
+        composable<TranslationRoute> {
+            com.supereva.fluentai.ui.translation.TranslationScreen(
+                onStartTranslation = onNavigateToActiveTranslation
+            )
         }
 
         composable<ProgressRoute> {

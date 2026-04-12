@@ -9,5 +9,7 @@ data class TopicUiModel(
     val title: String,
     val duration: String,
     val difficulty: String,
-    val imageUrl: String
+    val imageUrl: String,
+    val firstQuestion: String,
+    @androidx.annotation.DrawableRes val imageResId: Int? = null
 )

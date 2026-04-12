@@ -18,7 +18,7 @@ import kotlinx.serialization.Serializable
 data object HomeRoute
 
 @Serializable
-data object LearnUnitsRoute
+data object TranslationRoute
 
 @Serializable
 data object MembershipRoute
@@ -26,13 +26,18 @@ data object MembershipRoute
 @Serializable
 data object ProgressRoute
 
+@Serializable
+data object ActiveTranslationRoute
+
 // ── Speaking session (full-screen overlay) ──────────────────────────────
 
 @Serializable
 data class SpeakingSessionRoute(
     val topicId: String,
     val difficulty: String = Difficulty.BEGINNER.name,
-    val sessionMode: String = SessionMode.AI.name
+    val sessionMode: String = SessionMode.AI.name,
+    val sourceLang: String? = null,
+    val targetLang: String? = null
 ) {
     /** Convenience: parse [difficulty] back to the enum. */
     fun parseDifficulty(): Difficulty =
@@ -42,6 +47,9 @@ data class SpeakingSessionRoute(
     fun parseSessionMode(): SessionMode =
         SessionMode.valueOf(sessionMode)
 }
+
+@Serializable
+data class LanguagePickerRoute(val isSource: Boolean)
 
 // ── Graph-level route markers (used for nested nav graphs) ──────────────
 

@@ -62,4 +62,7 @@ interface AiConversationEngine {
      * Gracefully close the AI session and release resources.
      */
     suspend fun endSession()
+
+    /** Force the AI backend to commit the audio buffer and generate a reply immediately. */
+    suspend fun commitUserTurn()
 }

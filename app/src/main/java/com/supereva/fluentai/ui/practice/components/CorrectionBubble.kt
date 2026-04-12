@@ -57,26 +57,53 @@ fun CorrectionBubble(
                     fontWeight = FontWeight.SemiBold
                 )
                 Spacer(modifier = Modifier.height(4.dp))
+                
+                val diffs = com.supereva.fluentai.domain.util.WordDiffUtil.computeDiff(
+                    original = turn.transcript,
+                    corrected = turn.correctedText
+                )
+                        
                 Text(
                     text = buildAnnotatedString {
-                        withStyle(
-                            SpanStyle(
-                                color = MaterialTheme.colorScheme.error,
-                                textDecoration = TextDecoration.LineThrough,
-                                fontSize = 13.sp
-                            )
-                        ) {
-                            append(turn.transcript)
-                        }
-                        append("\n")
-                        withStyle(
-                            SpanStyle(
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Medium,
-                                fontSize = 13.sp
-                            )
-                        ) {
-                            append("✓ ${turn.correctedText}")
+                        diffs.forEachIndexed { index, diff ->
+                            when (diff.operation) {
+                                com.supereva.fluentai.domain.util.DiffOperation.DELETE -> {
+                                    withStyle(
+                                        SpanStyle(
+                                            color = MaterialTheme.colorScheme.error,
+                                            textDecoration = TextDecoration.LineThrough,
+                                            fontSize = 13.sp
+                                        )
+                                    ) {
+                                        append(diff.word)
+                                    }
+                                }
+                                com.supereva.fluentai.domain.util.DiffOperation.INSERT -> {
+                                    withStyle(
+                                        SpanStyle(
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp
+                                        )
+                                    ) {
+                                        append(diff.word)
+                                    }
+                                }
+                                com.supereva.fluentai.domain.util.DiffOperation.KEEP -> {
+                                    withStyle(
+                                        SpanStyle(
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            fontSize = 13.sp
+                                        )
+                                    ) {
+                                        append(diff.word)
+                                    }
+                                }
+                            }
+                            // Add a space after each word except the last one
+                            if (index < diffs.size - 1) {
+                                append(" ")
+                            }
                         }
                     },
                     style = MaterialTheme.typography.bodySmall

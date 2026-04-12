@@ -8,5 +8,6 @@ package com.supereva.fluentai.domain.session.model
  */
 enum class SessionMode {
     AI,
-    HUMAN
+    HUMAN,
+    TRANSLATION_PRACTICE
 }

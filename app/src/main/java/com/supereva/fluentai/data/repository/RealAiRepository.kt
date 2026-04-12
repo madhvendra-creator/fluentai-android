@@ -8,17 +8,16 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * Real [AiRepository] that calls the OpenAI Chat Completions API
+ * Real [AiRepository] that calls the Fastify backend 
  * to analyse the user's spoken text and return a dynamic
  * [PracticeResult] with corrected text, feedback, and score.
  */
 class RealAiRepository(
-    private val apiKey: String
+    private val authManager: com.supereva.fluentai.domain.auth.AuthManager
 ) : AiRepository {
 
     private val client = OkHttpClient.Builder()
@@ -26,43 +25,34 @@ class RealAiRepository(
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    override suspend fun analyzeSpeech(text: String): PracticeResult {
+    override suspend fun analyzeSpeech(
+        text: String, 
+        challengeSentence: String?,
+        sessionMode: String,
+        topicId: String?,
+        previousAiText: String?
+    ): PracticeResult {
         return withContext(Dispatchers.IO) {
 
-            val systemPrompt = """
-                You are an English language tutor. The user will give you a sentence they spoke.
-                Respond ONLY with a JSON object (no markdown, no explanation) in this exact format:
-                {
-                  "correctedText": "the grammatically correct version of the sentence",
-                  "feedback": "a short, encouraging explanation of what was wrong and how to fix it",
-                  "score": 85
-                }
-                Rules:
-                - "score" is an integer 0-100 rating the grammar and fluency.
-                - If the sentence is already perfect, set correctedText equal to the original, feedback to a compliment, and score to 95-100.
-                - Keep feedback under 2 sentences.
-            """.trimIndent()
-
-            val messagesArray = JSONArray().apply {
-                put(JSONObject().apply {
-                    put("role", "system")
-                    put("content", systemPrompt)
-                })
-                put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", text)
-                })
-            }
-
             val body = JSONObject().apply {
-                put("model", "gpt-4o-mini")
-                put("messages", messagesArray)
-                put("temperature", 0.3)
+                put("message", text)
+                put("sessionMode", sessionMode)
+                if (challengeSentence != null) {
+                    put("challengeSentence", challengeSentence)
+                }
+                if (topicId != null) {
+                    put("topicId", topicId)
+                }
+                if (previousAiText != null) {
+                    put("previousAiText", previousAiText)
+                }
             }
+
+            val token = authManager.getAuthToken() ?: authManager.authenticateDevice()
 
             val request = Request.Builder()
-                .url("https://api.openai.com/v1/chat/completions")
-                .addHeader("Authorization", "Bearer $apiKey")
+                .url("https://fluentai-backend-production-6a57.up.railway.app/chat/evaluate")
+                .addHeader("Authorization", "Bearer $token")
                 .addHeader("Content-Type", "application/json")
                 .post(body.toString().toRequestBody("application/json".toMediaType()))
                 .build()
@@ -70,35 +60,32 @@ class RealAiRepository(
             val response = client.newCall(request).execute()
 
             if (!response.isSuccessful) {
-                throw Exception("OpenAI API error: ${response.code}")
+                throw Exception("Backend API error: ${response.code}")
             }
 
             val responseBody = response.body?.string()
-                ?: throw Exception("Empty response from OpenAI")
+                ?: throw Exception("Empty response from backend")
 
-            val json = JSONObject(responseBody)
-            val content = json
-                .getJSONArray("choices")
-                .getJSONObject(0)
-                .getJSONObject("message")
-                .getString("content")
-                .trim()
+            try {
+                val resultJson = JSONObject(responseBody)
 
-            // Strip markdown code fences if the model wraps in ```json ... ```
-            val cleanJson = content
-                .removePrefix("```json")
-                .removePrefix("```")
-                .removeSuffix("```")
-                .trim()
+                PracticeResult(
+                    transcript = text,
+                    correctedText = resultJson.getString("correctedText"),
+                    feedback = resultJson.getString("feedback"),
+                    score = resultJson.getInt("score")
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("RealAiRepository", "Error parsing AI response: ${e.message}")
+                android.util.Log.e("RealAiRepository", "Raw response: $responseBody")
 
-            val resultJson = JSONObject(cleanJson)
-
-            PracticeResult(
-                transcript = text,
-                correctedText = resultJson.getString("correctedText"),
-                feedback = resultJson.getString("feedback"),
-                score = resultJson.getInt("score")
-            )
+                PracticeResult(
+                    transcript = text,
+                    correctedText = text, // Assume original is okay if we can't process
+                    feedback = "Good effort! I couldn't process specific feedback this time, but keep practicing.",
+                    score = 80
+                )
+            }
         }
     }
 }

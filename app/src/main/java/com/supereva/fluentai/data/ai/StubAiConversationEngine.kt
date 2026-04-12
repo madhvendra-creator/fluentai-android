@@ -87,4 +87,8 @@ class StubAiConversationEngine : AiConversationEngine {
     override suspend fun endSession() {
         // No-op — nothing to tear down
     }
+
+    override suspend fun commitUserTurn() {
+        // No-op for stub
+    }
 }

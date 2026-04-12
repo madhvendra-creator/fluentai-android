@@ -39,15 +39,24 @@ fun RecentSessionsList(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
         )
 
-        LazyColumn(
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(sessions) { session ->
-                SessionItem(
-                    session = session,
-                    onClick = { onSessionClick(session.sessionId) }
-                )
+        if (sessions.isEmpty()) {
+            Text(
+                text = "No sessions yet. Head to the Home tab to start practicing!",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(16.dp)
+            )
+        } else {
+            LazyColumn(
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(sessions) { session ->
+                    SessionItem(
+                        session = session,
+                        onClick = { onSessionClick(session.sessionId) }
+                    )
+                }
             }
         }
     }

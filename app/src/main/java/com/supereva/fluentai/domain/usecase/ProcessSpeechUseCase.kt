@@ -14,11 +14,23 @@ class ProcessSpeechUseCase(
     private val aiRepository: AiRepository
 ) {
 
-    suspend operator fun invoke(transcript: String): PracticeResult {
+    suspend operator fun invoke(
+        transcript: String,
+        challengeSentence: String? = null,
+        sessionMode: String = "AI",
+        topicId: String? = null,
+        previousAiText: String? = null
+    ): PracticeResult {
         // Step 1 — AI analysis (direct text input)
         // Ensure transcript isn't empty before sending? 
         // For now, let AI repository handle it or assume valid input.
-        val result = aiRepository.analyzeSpeech(transcript)
+        val result = aiRepository.analyzeSpeech(
+            text = transcript, 
+            challengeSentence = challengeSentence, 
+            sessionMode = sessionMode,
+            topicId = topicId,
+            previousAiText = previousAiText
+        )
 
         return result
     }

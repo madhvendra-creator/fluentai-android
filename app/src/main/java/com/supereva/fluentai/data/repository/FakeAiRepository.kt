@@ -6,7 +6,13 @@ import kotlinx.coroutines.delay
 
 class FakeAiRepository : AiRepository {
 
-    override suspend fun analyzeSpeech(text: String): PracticeResult {
+    override suspend fun analyzeSpeech(
+        text: String,
+        challengeSentence: String?,
+        sessionMode: String,
+        topicId: String?,
+        previousAiText: String?
+    ): PracticeResult {
         delay(1500) // simulate AI processing
 
         return PracticeResult(

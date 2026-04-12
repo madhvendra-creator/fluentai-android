@@ -28,6 +28,7 @@ fun NavGraphBuilder.speakingSessionGraph(
             // Scope ViewModel to the nav-graph backstack entry
             // so it survives child-composable recompositions.
             PracticeScreen(
+                route = route,
                 onBackClick = onBack,
                 viewModelStoreOwner = backStackEntry
             )

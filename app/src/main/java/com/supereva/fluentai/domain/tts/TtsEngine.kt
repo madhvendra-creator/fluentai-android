@@ -35,4 +35,9 @@ interface TtsEngine {
      * UI can observe this to show visual indicators if needed.
      */
     val isSpeaking: StateFlow<Boolean>
+
+    /**
+     * Change the TTS engine's speaking locale (e.g., from US English to Hindi).
+     */
+    fun setLanguage(locale: java.util.Locale)
 }

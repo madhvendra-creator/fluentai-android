@@ -114,6 +114,10 @@ class AndroidTtsEngine(context: Context) : TtsEngine {
         _isSpeaking.value = false
     }
 
+    override fun setLanguage(locale: Locale) {
+        tts?.language = locale
+    }
+
     /**
      * Release the underlying [TextToSpeech] engine.
      * After this call, [speak] and [stop] become no-ops.

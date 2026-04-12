@@ -18,6 +18,10 @@ class FakeSpeechRepository : SpeechRepository {
         // No-op
     }
 
+    override fun release() {
+        // No-op
+    }
+
     override suspend fun transcribeAudio(file: File): String {
         delay(1500) // simulate network call
         return "I am practice English every day"
