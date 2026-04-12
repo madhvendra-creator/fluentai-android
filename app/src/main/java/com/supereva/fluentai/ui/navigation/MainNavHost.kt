@@ -125,6 +125,7 @@ fun MainNavHost() {
                 com.supereva.fluentai.ui.translation.LanguagePickerScreen(
                     isSource = route.isSource,
                     currentSelectedLanguage = if (route.isSource) sourceLanguage else targetLanguage,
+                    disabledLanguage = if (route.isSource) targetLanguage else sourceLanguage,
                     onBack = { navController.popBackStack() },
                     onLanguageSelected = { language ->
                         translationViewModel.setLanguage(route.isSource, language)

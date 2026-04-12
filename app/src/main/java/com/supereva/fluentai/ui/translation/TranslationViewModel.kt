@@ -22,8 +22,21 @@ class TranslationViewModel : ViewModel() {
     fun setLanguage(isSource: Boolean, language: String) {
         if (isSource) {
             _sourceLanguage.value = language
+            if (_targetLanguage.value == language) {
+                _targetLanguage.value = firstLanguageOtherThan(language)
+            }
         } else {
             _targetLanguage.value = language
+            if (_sourceLanguage.value == language) {
+                _sourceLanguage.value = firstLanguageOtherThan(language)
+            }
         }
+    }
+
+    private fun firstLanguageOtherThan(language: String): String =
+        SUPPORTED_LANGUAGES.first { it != language }
+
+    companion object {
+        private val SUPPORTED_LANGUAGES = listOf("English", "French", "German", "Hindi", "Spanish").sorted()
     }
 }
