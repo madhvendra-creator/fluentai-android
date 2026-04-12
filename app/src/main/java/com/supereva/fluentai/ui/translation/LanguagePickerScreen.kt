@@ -178,7 +178,7 @@ private fun LanguageRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = !isDisabled, onClick = onClick)
+            .clickable(onClick = onClick)
             .background(if (isSelected) selectedBgColor else Color.Transparent)
             .alpha(if (isDisabled) 0.3f else 1.0f)
             .padding(horizontal = 24.dp, vertical = 16.dp),
