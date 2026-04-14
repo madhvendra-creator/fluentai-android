@@ -2,9 +2,6 @@ package com.supereva.fluentai.ui.translation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -36,10 +33,6 @@ fun TranslationScreen(
                 .padding(top = 16.dp)
         ) {
             // Section Header
-            val supportedFlags = listOf(
-                "🇪🇸", "🇫🇷", "🇩🇪", "🇮🇳", "🇯🇵", "🇨🇳", "🇮🇹", "🇰🇷", "🇷🇺", "🇸🇦", "🇧🇷"
-            )
-
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -52,26 +45,6 @@ fun TranslationScreen(
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold
                 )
-
-                Spacer(modifier = Modifier.width(16.dp))
-
-                // Scrolling flags
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    items(supportedFlags) { flag ->
-                        Surface(
-                            shape = CircleShape,
-                            color = Color.White.copy(alpha = 0.1f),
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(text = flag, fontSize = 16.sp)
-                            }
-                        }
-                    }
-                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
