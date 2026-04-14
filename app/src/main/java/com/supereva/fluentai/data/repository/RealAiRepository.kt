@@ -26,11 +26,13 @@ class RealAiRepository(
         .build()
 
     override suspend fun analyzeSpeech(
-        text: String, 
+        text: String,
         challengeSentence: String?,
         sessionMode: String,
         topicId: String?,
-        previousAiText: String?
+        previousAiText: String?,
+        sourceLang: String,
+        targetLanguage: String
     ): PracticeResult {
         return withContext(Dispatchers.IO) {
 
@@ -46,6 +48,8 @@ class RealAiRepository(
                 if (previousAiText != null) {
                     put("previousAiText", previousAiText)
                 }
+                put("sourceLang", sourceLang)
+                put("targetLanguage", targetLanguage)
             }
 
             val token = authManager.getAuthToken() ?: authManager.authenticateDevice()

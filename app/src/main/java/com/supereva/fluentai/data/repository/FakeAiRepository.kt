@@ -11,7 +11,9 @@ class FakeAiRepository : AiRepository {
         challengeSentence: String?,
         sessionMode: String,
         topicId: String?,
-        previousAiText: String?
+        previousAiText: String?,
+        sourceLang: String,
+        targetLanguage: String
     ): PracticeResult {
         delay(1500) // simulate AI processing
 

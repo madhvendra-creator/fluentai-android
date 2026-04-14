@@ -19,17 +19,21 @@ class ProcessSpeechUseCase(
         challengeSentence: String? = null,
         sessionMode: String = "AI",
         topicId: String? = null,
-        previousAiText: String? = null
+        previousAiText: String? = null,
+        sourceLang: String = "English",
+        targetLanguage: String = "Hindi"
     ): PracticeResult {
         // Step 1 — AI analysis (direct text input)
-        // Ensure transcript isn't empty before sending? 
+        // Ensure transcript isn't empty before sending?
         // For now, let AI repository handle it or assume valid input.
         val result = aiRepository.analyzeSpeech(
-            text = transcript, 
-            challengeSentence = challengeSentence, 
+            text = transcript,
+            challengeSentence = challengeSentence,
             sessionMode = sessionMode,
             topicId = topicId,
-            previousAiText = previousAiText
+            previousAiText = previousAiText,
+            sourceLang = sourceLang,
+            targetLanguage = targetLanguage
         )
 
         return result

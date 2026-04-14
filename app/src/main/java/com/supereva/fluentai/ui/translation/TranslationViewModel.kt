@@ -37,6 +37,6 @@ class TranslationViewModel : ViewModel() {
         SUPPORTED_LANGUAGES.first { it != language }
 
     companion object {
-        private val SUPPORTED_LANGUAGES = listOf("English", "French", "German", "Hindi", "Spanish").sorted()
+        private val SUPPORTED_LANGUAGES = listOf("English", "Hindi").sorted()
     }
 }

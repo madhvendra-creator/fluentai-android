@@ -15,7 +15,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -42,7 +41,7 @@ fun LanguagePickerScreen(
     // Hardcoded language lists for demonstration
     val recentLanguages = remember { listOf("English", "Hindi") }
     val allLanguages = remember {
-        listOf("English", "French", "German", "Hindi", "Spanish").sorted()
+        listOf("English", "Hindi").sorted()
     }
     
     val filteredLanguages = remember(searchQuery) {
@@ -134,8 +133,7 @@ fun LanguagePickerScreen(
                             isSelected = currentSelectedLanguage == language,
                             selectedBgColor = selectedBgColor,
                             defaultText = defaultText,
-                            onClick = { onLanguageSelected(language) },
-                            isDisabled = language == disabledLanguage
+                        onClick = { onLanguageSelected(language) }
                         )
                     }
 
@@ -156,8 +154,7 @@ fun LanguagePickerScreen(
                         isSelected = currentSelectedLanguage == language,
                         selectedBgColor = selectedBgColor,
                         defaultText = defaultText,
-                        onClick = { onLanguageSelected(language) },
-                        isDisabled = language == disabledLanguage
+                        onClick = { onLanguageSelected(language) }
                     )
                 }
             }
@@ -172,15 +169,13 @@ private fun LanguageRow(
     selectedBgColor: Color,
     defaultText: Color,
     onClick: () -> Unit,
-    leadingIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
-    isDisabled: Boolean = false
+    leadingIcon: androidx.compose.ui.graphics.vector.ImageVector? = null
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .background(if (isSelected) selectedBgColor else Color.Transparent)
-            .alpha(if (isDisabled) 0.3f else 1.0f)
             .padding(horizontal = 24.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween

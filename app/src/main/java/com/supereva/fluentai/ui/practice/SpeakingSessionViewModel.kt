@@ -344,11 +344,13 @@ class SpeakingSessionViewModel(
                     ?.lastOrNull { it.role == TurnRole.AI }?.transcript
 
                 val result = processSpeechUseCase(
-                    transcript = transcript, 
-                    challengeSentence = currentChallengeSentence, 
+                    transcript = transcript,
+                    challengeSentence = currentChallengeSentence,
                     sessionMode = currentSessionMode,
                     topicId = topicId,
-                    previousAiText = previousAiText
+                    previousAiText = previousAiText,
+                    sourceLang = currentSourceLang,
+                    targetLanguage = currentTargetLang
                 )
 
                 // Store the correct answer for UI display
