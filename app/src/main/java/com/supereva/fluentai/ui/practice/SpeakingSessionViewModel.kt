@@ -207,16 +207,14 @@ class SpeakingSessionViewModel(
                                 accumulatedTranscript.append(result.text.trim())
                                 _partialTranscript.value = accumulatedTranscript.toString()
                             }
-                            // Breathing delay then seamlessly restart recognition
+                            // Seamlessly restart recognition
                             if (_isMicHot.value) {
-                                delay(150)
                                 nativeRepo?.restartListening(getRecognizerLocale())
                             }
                         }
                         is com.supereva.fluentai.domain.repository.SpeechResult.Error -> {
-                            // Breathing delay then seamlessly restart recognition
+                            // Seamlessly restart recognition
                             if (_isMicHot.value) {
-                                delay(150)
                                 nativeRepo?.restartListening(getRecognizerLocale())
                             }
                         }
@@ -256,12 +254,14 @@ class SpeakingSessionViewModel(
         _partialTranscript.value = ""
         // isMicHot stays TRUE — mic stays Green
 
-        // Force a fresh recognition window to discard any buffered partials
         val nativeRepo = speechRepository as? com.supereva.fluentai.data.repository.NativeSpeechRepository
-        nativeRepo?.restartListening(getRecognizerLocale())
+        // forceRestartListening mutes beeps, cancels, then restarts cleanly
+        // after a settle delay — prevents double-session overlap and beep sounds
+        nativeRepo?.forceRestartListening(getRecognizerLocale())
 
         if (currentSessionMode == com.supereva.fluentai.domain.session.model.SessionMode.TRANSLATION_PRACTICE.name && currentChallengeSentence != null) {
             viewModelScope.launch {
+                delay(400) // Wait for mic restart to complete first
                 SessionServiceLocator.ttsEngine?.setLanguage(java.util.Locale.US)
                 coordinator.speakText(currentChallengeSentence!!)
             }
@@ -353,8 +353,12 @@ class SpeakingSessionViewModel(
                     targetLanguage = currentTargetLang
                 )
 
-                // Store the correct answer for UI display
-                _lastCorrectAnswer.value = result.correctedText
+                // Store the correct answer for UI display (only when autocorrect is ON)
+                if (_isAutocorrectEnabled.value) {
+                    _lastCorrectAnswer.value = result.correctedText
+                } else {
+                    _lastCorrectAnswer.value = null
+                }
 
                 coordinator.appendUserTurn(SessionTurn(TurnRole.USER, result.transcript, result.correctedText, score = result.score))
 
@@ -400,11 +404,12 @@ class SpeakingSessionViewModel(
                     }
 
                     coordinator.appendOrUpdateAiTurn(com.supereva.fluentai.domain.ai.AiChunk(accumulatedText, isFinal = true))
-                    
+
                     SessionServiceLocator.ttsEngine?.setLanguage(java.util.Locale.US)
                     coordinator.transitionTo(SessionState.AiSpeaking)
                     coordinator.speakText(accumulatedText)
                     waitForTtsToFinish()
+                    _lastCorrectAnswer.value = null
 
                     coordinator.transitionTo(SessionState.Listening)
                 }
