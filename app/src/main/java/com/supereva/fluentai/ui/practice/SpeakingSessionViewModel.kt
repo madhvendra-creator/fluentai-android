@@ -59,7 +59,7 @@ class SpeakingSessionViewModel(
         "Spanish" -> "es-ES"
         "French"  -> "fr-FR"
         "German"  -> "de-DE"
-        else      -> "en-US"
+        else      -> "en-IN"
     }
 
     /** Returns the recognizer locale to use: target language locale for translation, en-US otherwise. */
@@ -67,7 +67,7 @@ class SpeakingSessionViewModel(
         return if (currentSessionMode == com.supereva.fluentai.domain.session.model.SessionMode.TRANSLATION_PRACTICE.name) {
             getLocaleForLanguage(currentTargetLang)
         } else {
-            "en-US"
+            "en-IN"
         }
     }
 

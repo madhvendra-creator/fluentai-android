@@ -33,7 +33,7 @@ class NativeSpeechRepository(
     )
 
     @Volatile private var isRecognitionActive = false
-    @Volatile private var currentLanguage = "en-US"
+    @Volatile private var currentLanguage = "en-IN"
 
     // Store original system volume to restore later
     private var originalSystemVolume = -1
@@ -132,7 +132,6 @@ class NativeSpeechRepository(
             putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
             // Balanced timeout for smoother conversational turn-taking
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
@@ -155,12 +154,12 @@ class NativeSpeechRepository(
             }
     }
 
-    fun restartListening(language: String = "en-US") {
+    fun restartListening(language: String = "en-IN") {
         currentLanguage = language
         mainHandler.post { scheduleStartRecognition(language) }
     }
 
-    fun forceRestartListening(language: String = "en-US") {
+    fun forceRestartListening(language: String = "en-IN") {
         currentLanguage = language
         mainHandler.post {
             silenceSystem()
@@ -172,7 +171,7 @@ class NativeSpeechRepository(
         }
     }
 
-    fun fireStartListening(language: String = "en-US") {
+    fun fireStartListening(language: String = "en-IN") {
         restartListening(language)
     }
 
