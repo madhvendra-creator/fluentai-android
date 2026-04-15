@@ -373,7 +373,7 @@ colors = listOf(Color(0xFF2E003E), Color(0xFF000000))
             showPleaseWait && uiState.isAiSpeaking -> "Please wait"
             uiState.isAiSpeaking -> "" // Keep blank while AI speaks
             isRecording -> "Tap again to submit"
-            else -> "Tap to speak"
+            else -> ""
         }
 
         Text(
@@ -407,7 +407,7 @@ fun CallActionButton(
     val backgroundColor = when {
         isRecording -> Color(0xFF00C853)
         isAiSpeaking -> Color.White.copy(alpha = 0.15f)
-        else -> Color(0xFFFF9800)
+        else -> Color(0xFF8B8B8B).copy(alpha = 0.35f)
     }
 
     val infiniteTransition = rememberInfiniteTransition(label = "mic")
@@ -482,7 +482,7 @@ fun CallActionButton(
                 }
             } else {
                 Icon(
-                    imageVector = if (isAiSpeaking) Icons.Default.MicOff else Icons.Default.Mic,
+                    imageVector = Icons.Default.MicOff,
                     contentDescription = null,
                     tint = Color.White,
                     modifier = Modifier.size(32.dp)
