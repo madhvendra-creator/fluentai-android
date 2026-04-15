@@ -47,6 +47,7 @@ class SpeakingSessionViewModel(
 
     private var recordingJob: Job? = null
     private var processingJob: Job? = null
+    @Volatile private var isTurnBeingProcessed = false
 
     private var currentChallengeSentence: String? = null
     private var currentSessionMode: String = "AI"
@@ -183,13 +184,9 @@ class SpeakingSessionViewModel(
                 }
             } catch (e: Exception) { e.printStackTrace(); _isMicHot.value = false }
         } else {
-            // Cast to NativeSpeechRepository to access restartListening()
-            val nativeRepo = speechRepository as? com.supereva.fluentai.data.repository.NativeSpeechRepository
-
             recordingJob = viewModelScope.launch {
-                // Collect from the shared flow. startListening() fires the first
-                // recognition; after Final/Error we call restartListening() to
-                // re-trigger recognition on the SAME SpeechRecognizer instance.
+                // Continuous microphone stream with VAD endpointing.
+                // The repository emits Final when the user pauses for long enough.
                 speechRepository.startListening(getRecognizerLocale()).collect { result ->
                     if (!_isMicHot.value) return@collect
 
@@ -202,20 +199,16 @@ class SpeakingSessionViewModel(
                             _currentVolume.value = result.rmsdB
                         }
                         is com.supereva.fluentai.domain.repository.SpeechResult.Final -> {
-                            if (result.text.isNotBlank()) {
+                            if (_isMicHot.value && !isTurnBeingProcessed && result.text.isNotBlank()) {
                                 if (accumulatedTranscript.isNotEmpty()) accumulatedTranscript.append(" ")
                                 accumulatedTranscript.append(result.text.trim())
                                 _partialTranscript.value = accumulatedTranscript.toString()
-                            }
-                            // Seamlessly restart recognition
-                            if (_isMicHot.value) {
-                                nativeRepo?.restartListening(getRecognizerLocale())
+                                onSpeechFinalized(result.text.trim(), keepMicHot = true)
                             }
                         }
                         is com.supereva.fluentai.domain.repository.SpeechResult.Error -> {
-                            // Seamlessly restart recognition
-                            if (_isMicHot.value) {
-                                nativeRepo?.restartListening(getRecognizerLocale())
+                            if (result.message.isNotBlank() && result.message != "No clear speech detected") {
+                                coordinator.transitionTo(SessionState.Error(result.message, null))
                             }
                         }
                     }
@@ -252,16 +245,11 @@ class SpeakingSessionViewModel(
     fun resetActiveRecording() {
         accumulatedTranscript.clear()
         _partialTranscript.value = ""
-        // isMicHot stays TRUE — mic stays Green
-
-        val nativeRepo = speechRepository as? com.supereva.fluentai.data.repository.NativeSpeechRepository
-        // forceRestartListening mutes beeps, cancels, then restarts cleanly
-        // after a settle delay — prevents double-session overlap and beep sounds
-        nativeRepo?.forceRestartListening(getRecognizerLocale())
+        // Mic remains hot; with continuous VAD there is no recognizer restart needed.
 
         if (currentSessionMode == com.supereva.fluentai.domain.session.model.SessionMode.TRANSLATION_PRACTICE.name && currentChallengeSentence != null) {
             viewModelScope.launch {
-                delay(400) // Wait for mic restart to complete first
+                delay(400) // Small gap before re-playing challenge prompt
                 SessionServiceLocator.ttsEngine?.setLanguage(java.util.Locale.US)
                 coordinator.speakText(currentChallengeSentence!!)
             }
@@ -331,7 +319,9 @@ class SpeakingSessionViewModel(
     }
 
 
-    private fun onSpeechFinalized(transcript: String) {
+    private fun onSpeechFinalized(transcript: String, keepMicHot: Boolean = false) {
+        if (isTurnBeingProcessed) return
+        isTurnBeingProcessed = true
         coordinator.transitionTo(SessionState.Processing)
         _partialTranscript.value = ""
 
@@ -418,6 +408,14 @@ class SpeakingSessionViewModel(
                 throw e
             } catch (e: Exception) {
                 coordinator.transitionTo(SessionState.Error(e.message ?: "Unknown error", e))
+            } finally {
+                isTurnBeingProcessed = false
+                if (keepMicHot && _isMicHot.value) {
+                    accumulatedTranscript.clear()
+                    _partialTranscript.value = ""
+                    _currentVolume.value = 0f
+                    coordinator.transitionTo(SessionState.Listening)
+                }
             }
         }
     }

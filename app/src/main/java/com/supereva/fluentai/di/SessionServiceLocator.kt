@@ -29,9 +29,13 @@ object SessionServiceLocator {
         if (_ttsEngine == null) {
             val appCtx = context.applicationContext
             _ttsEngine = AndroidTtsEngine(appCtx)
-            _nativeSpeechRepository = NativeSpeechRepository(appCtx)
             _audioRecorder = AudioRecorder(appCtx)
             _authManager = com.supereva.fluentai.data.auth.RealAuthManager(appCtx)
+            _nativeSpeechRepository = NativeSpeechRepository(
+                context = appCtx,
+                audioRecorder = _audioRecorder ?: error("AudioRecorder init failed"),
+                authManager = _authManager ?: error("AuthManager init failed")
+            )
 
             _database = androidx.room.Room.databaseBuilder(
                 appCtx,

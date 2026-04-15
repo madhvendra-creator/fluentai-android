@@ -1,30 +1,47 @@
 package com.supereva.fluentai.data.repository
 
 import android.content.Context
-import android.content.Intent
-import android.os.Bundle
-import android.os.SystemClock
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import com.supereva.fluentai.data.audio.AudioRecorder
+import com.supereva.fluentai.domain.auth.AuthManager
 import com.supereva.fluentai.domain.repository.SpeechRepository
 import com.supereva.fluentai.domain.repository.SpeechResult
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 class NativeSpeechRepository(
-    private val context: Context
+    private val context: Context,
+    private val audioRecorder: AudioRecorder,
+    private val authManager: AuthManager
 ) : SpeechRepository {
 
-    private var speechRecognizer: SpeechRecognizer? = null
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val audioManager by lazy {
-        context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-    }
+    private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var listeningJob: Job? = null
+    private var transcribeJob: Job? = null
+    private val pendingSegments = Channel<AudioRecorder.SegmentFile>(capacity = Channel.UNLIMITED)
+
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .build()
 
     private val _results = MutableSharedFlow<SpeechResult>(
         replay = 0,
@@ -32,230 +49,177 @@ class NativeSpeechRepository(
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
 
-    @Volatile private var isRecognitionActive = false
+    @Volatile private var isStreaming = false
     @Volatile private var currentLanguage = "en-IN"
 
-    // Store original system volume to restore later
-    private var originalSystemVolume = -1
-    private var pendingStart: Runnable? = null
-    private var lastStartAtMs = 0L
-    private val minStartGapMs = 220L
+    private var inSpeech = false
+    private var utteranceStartMs = 0L
+    private var lastSpeechMs = 0L
+    private val utteranceBuffer = ByteArrayOutputStream()
 
-    // ── Volume control — instant setStreamVolume(0) not ADJUST_MUTE ──
-
-    private fun silenceSystem() {
-        try {
-            if (originalSystemVolume < 0) {
-                originalSystemVolume = audioManager.getStreamVolume(
-                    android.media.AudioManager.STREAM_SYSTEM
-                )
-            }
-            audioManager.setStreamVolume(
-                android.media.AudioManager.STREAM_SYSTEM, 0, 0
-            )
-        } catch (_: Exception) {}
-    }
-
-    private fun restoreSystem() {
-        try {
-            val vol = if (originalSystemVolume >= 0) originalSystemVolume
-            else audioManager.getStreamMaxVolume(
-                android.media.AudioManager.STREAM_SYSTEM) / 2
-            audioManager.setStreamVolume(
-                android.media.AudioManager.STREAM_SYSTEM, vol, 0
-            )
-        } catch (_: Exception) {}
-    }
-
-    private fun getOrCreateRecognizer(): SpeechRecognizer? {
-        if (speechRecognizer != null) return speechRecognizer
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) return null
-
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-            setRecognitionListener(object : RecognitionListener {
-
-                override fun onReadyForSpeech(params: Bundle?) {
-                    isRecognitionActive = true
-                    // ONLY place we restore audio — mic is confirmed ready
-                    restoreSystem()
-                }
-
-                override fun onBeginningOfSpeech() {}
-
-                override fun onRmsChanged(rmsdB: Float) {
-                    _results.tryEmit(SpeechResult.VolumeUpdate(rmsdB))
-                }
-
-                override fun onBufferReceived(buffer: ByteArray?) {}
-
-                override fun onEndOfSpeech() {
-                    // Immediately silence the stop beep
-                    silenceSystem()
-                }
-
-                override fun onError(error: Int) {
-                    isRecognitionActive = false
-                    _results.tryEmit(SpeechResult.Error(getErrorText(error)))
-                }
-
-                override fun onResults(results: Bundle?) {
-                    isRecognitionActive = false
-                    val matches = results
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    if (!matches.isNullOrEmpty()) {
-                        _results.tryEmit(SpeechResult.Final(matches[0]))
-                    } else {
-                        _results.tryEmit(SpeechResult.Error("No match"))
-                    }
-                }
-
-                override fun onPartialResults(partialResults: Bundle?) {
-                    val matches = partialResults
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    if (!matches.isNullOrEmpty()) {
-                        _results.tryEmit(SpeechResult.Partial(matches[0]))
-                    }
-                }
-
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
-        }
-        return speechRecognizer
-    }
-
-    private fun buildIntent(language: String): Intent =
-        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language)
-            putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-            // Balanced timeout for smoother conversational turn-taking
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
-        }
+    private val endpointSilenceMs = 1500L
+    private val minSpeechMs = 250L
+    private val maxUtteranceBytes = AudioRecorder.SAMPLE_RATE * 2 * 20 // 20 seconds cap
 
     override fun startListening(language: String): Flow<SpeechResult> {
         currentLanguage = language
         return _results
-            .onStart { startRecognition(language) }
-            .onCompletion {
-                mainHandler.post {
-                    if (isRecognitionActive) {
-                        speechRecognizer?.cancel()
-                        isRecognitionActive = false
+            .onStart { startContinuousStreaming(language) }
+            .onCompletion { stopListening() }
+    }
+
+    private fun startContinuousStreaming(language: String) {
+        if (isStreaming) return
+        isStreaming = true
+        currentLanguage = language
+
+        if (transcribeJob == null) {
+            transcribeJob = repoScope.launch {
+                for (segment in pendingSegments) {
+                    try {
+                        val text = transcribeAudio(segment.file).trim()
+                        if (text.isNotBlank()) {
+                            _results.tryEmit(SpeechResult.Final(text))
+                        } else {
+                            _results.tryEmit(SpeechResult.Error("No clear speech detected"))
+                        }
+                    } catch (e: Exception) {
+                        _results.tryEmit(SpeechResult.Error(e.message ?: "Transcription failed"))
+                    } finally {
+                        segment.file.delete()
                     }
-                    restoreSystem()
                 }
             }
-    }
+        }
 
-    fun restartListening(language: String = "en-IN") {
-        currentLanguage = language
-        mainHandler.post { scheduleStartRecognition(language) }
-    }
-
-    fun forceRestartListening(language: String = "en-IN") {
-        currentLanguage = language
-        mainHandler.post {
-            silenceSystem()
-            if (isRecognitionActive) {
-                speechRecognizer?.cancel()
-                isRecognitionActive = false
+        listeningJob = repoScope.launch {
+            try {
+                audioRecorder.streamVadFrames(
+                    AudioRecorder.VadConfig(
+                        frameDurationMs = 20,
+                        speechThresholdDbOffset = 9f,
+                        minThresholdDb = -45f
+                    )
+                ).collect { frame ->
+                    if (!isStreaming) return@collect
+                    _results.tryEmit(SpeechResult.VolumeUpdate(frame.rmsDb))
+                    consumeVadFrame(frame, currentLanguage)
+                }
+            } catch (e: Exception) {
+                _results.tryEmit(SpeechResult.Error(e.message ?: "Mic stream failed"))
+                isStreaming = false
             }
-            mainHandler.postDelayed({ scheduleStartRecognition(language) }, 150)
         }
     }
 
-    fun fireStartListening(language: String = "en-IN") {
-        restartListening(language)
-    }
-
-    private fun startRecognition(language: String) {
-        scheduleStartRecognition(language)
-    }
-
-    private fun scheduleStartRecognition(language: String) {
-        pendingStart?.let { mainHandler.removeCallbacks(it) }
-        val now = SystemClock.elapsedRealtime()
-        val waitMs = (minStartGapMs - (now - lastStartAtMs)).coerceAtLeast(0L)
-        val task = Runnable {
-            pendingStart = null
-            startRecognitionNow(language)
-        }
-        pendingStart = task
-        if (waitMs == 0L) {
-            task.run()
-        } else {
-            mainHandler.postDelayed(task, waitMs)
-        }
-    }
-
-    private fun startRecognitionNow(language: String) {
-        val recognizer = getOrCreateRecognizer() ?: run {
-            _results.tryEmit(SpeechResult.Error("Not available"))
+    private fun consumeVadFrame(frame: AudioRecorder.VadFrame, language: String) {
+        val now = frame.timestampMs
+        if (frame.isSpeech) {
+            if (!inSpeech) {
+                inSpeech = true
+                utteranceStartMs = now
+                utteranceBuffer.reset()
+            }
+            lastSpeechMs = now
+            appendToUtterance(frame.pcm, frame.bytesRead)
             return
         }
-        if (isRecognitionActive) {
-            recognizer.cancel()
-            isRecognitionActive = false
+
+        if (!inSpeech) return
+
+        appendToUtterance(frame.pcm, frame.bytesRead)
+        val silenceFor = now - lastSpeechMs
+        val speechDuration = lastSpeechMs - utteranceStartMs
+        val reachedMaxBytes = utteranceBuffer.size() >= maxUtteranceBytes
+
+        if ((silenceFor >= endpointSilenceMs && speechDuration >= minSpeechMs) || reachedMaxBytes) {
+            val bytes = utteranceBuffer.toByteArray()
+            if (bytes.isNotEmpty()) {
+                val segment = audioRecorder.writePcmToWav(bytes, "segment_${language}")
+                pendingSegments.trySend(segment)
+            }
+            inSpeech = false
+            utteranceStartMs = 0L
+            lastSpeechMs = 0L
+            utteranceBuffer.reset()
         }
-        // Silence BEFORE startListening — this is what prevents the beep
-        silenceSystem()
-        lastStartAtMs = SystemClock.elapsedRealtime()
-        recognizer.startListening(buildIntent(language))
+    }
+
+    private fun appendToUtterance(bytes: ByteArray, size: Int) {
+        if (size <= 0) return
+        utteranceBuffer.write(bytes, 0, size)
     }
 
     override fun stopListening() {
-        silenceSystem()
-        mainHandler.post {
-            if (isRecognitionActive) {
-                speechRecognizer?.stopListening()
-                isRecognitionActive = false
-            }
-            pendingStart?.let {
-                mainHandler.removeCallbacks(it)
-                pendingStart = null
-            }
-            mainHandler.postDelayed({ restoreSystem() }, 500)
-        }
+        isStreaming = false
+        listeningJob?.cancel()
+        listeningJob = null
+        inSpeech = false
+        utteranceStartMs = 0L
+        lastSpeechMs = 0L
+        utteranceBuffer.reset()
+        audioRecorder.stopHotMic(releaseRecorder = false)
     }
 
     override fun release() {
-        mainHandler.post {
-            if (isRecognitionActive) {
-                speechRecognizer?.cancel()
-                isRecognitionActive = false
+        stopListening()
+        transcribeJob?.cancel()
+        transcribeJob = null
+        pendingSegments.close()
+        audioRecorder.release()
+    }
+
+    override suspend fun transcribeAudio(file: File): String = withContext(Dispatchers.IO) {
+        val token = authManager.getAuthToken() ?: authManager.authenticateDevice()
+        val endpoints = listOf(
+            "https://fluentai-backend-production-6a57.up.railway.app/chat/transcribe",
+            "https://fluentai-backend-production-6a57.up.railway.app/speech/transcribe",
+            "https://fluentai-backend-production-6a57.up.railway.app/stt/transcribe"
+        )
+
+        var lastError = "Transcription endpoint not reachable"
+        for (url in endpoints) {
+            try {
+                val requestBody = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("language", currentLanguage)
+                    .addFormDataPart(
+                        "audio",
+                        file.name,
+                        file.asRequestBody("audio/wav".toMediaType())
+                    )
+                    .build()
+
+                val request = Request.Builder()
+                    .url(url)
+                    .addHeader("Authorization", "Bearer $token")
+                    .post(requestBody)
+                    .build()
+
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        lastError = "Transcription failed: HTTP ${response.code}"
+                        return@use
+                    }
+                    val payload = response.body?.string().orEmpty()
+                    if (payload.isBlank()) {
+                        lastError = "Transcription returned empty response"
+                        return@use
+                    }
+                    val json = JSONObject(payload)
+                    val transcript = when {
+                        json.has("text") -> json.optString("text")
+                        json.has("transcript") -> json.optString("transcript")
+                        json.has("transcription") -> json.optString("transcription")
+                        else -> ""
+                    }.trim()
+                    if (transcript.isNotBlank()) return@withContext transcript
+                    lastError = "Transcription text missing in response"
+                }
+            } catch (e: Exception) {
+                lastError = e.message ?: "Transcription request failed"
             }
-            pendingStart?.let {
-                mainHandler.removeCallbacks(it)
-                pendingStart = null
-            }
-            speechRecognizer?.destroy()
-            speechRecognizer = null
-            restoreSystem()
         }
-    }
-
-    @Deprecated("Not supported")
-    override suspend fun transcribeAudio(file: File): String {
-        throw UnsupportedOperationException("Not supported")
-    }
-
-    private fun getErrorText(errorCode: Int): String = when (errorCode) {
-        SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
-        SpeechRecognizer.ERROR_CLIENT -> "Client side error"
-        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
-        SpeechRecognizer.ERROR_NETWORK -> "Network error"
-        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
-        SpeechRecognizer.ERROR_NO_MATCH -> "No match"
-        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "RecognitionService busy"
-        SpeechRecognizer.ERROR_SERVER -> "Server error"
-        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
-        else -> "Didn't understand, please try again."
+        throw IllegalStateException(lastError)
     }
 }
