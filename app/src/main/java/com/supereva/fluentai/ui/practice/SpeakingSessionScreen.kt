@@ -1,4 +1,6 @@
 package com.supereva.fluentai.ui.practice
+import android.media.AudioManager
+import android.media.ToneGenerator
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -48,6 +50,11 @@ modifier: Modifier = Modifier
 var showPleaseWait by remember { mutableStateOf(false) }
 val haptic = LocalHapticFeedback.current
 var showEmptyError by remember { mutableStateOf(false) }
+val toneGenerator = remember { ToneGenerator(AudioManager.STREAM_MUSIC, 70) }
+
+DisposableEffect(Unit) {
+    onDispose { toneGenerator.release() }
+}
 
 LaunchedEffect(showEmptyError) {
     if (showEmptyError) {
@@ -341,6 +348,7 @@ colors = listOf(Color(0xFF2E003E), Color(0xFF000000))
                                 onMicClick()
                             }
                         } else {
+                            toneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP, 80)
                             onMicClick() // Turn Orange -> Green
                         }
                     }
