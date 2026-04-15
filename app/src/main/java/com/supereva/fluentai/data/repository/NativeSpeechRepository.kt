@@ -3,6 +3,7 @@ package com.supereva.fluentai.data.repository
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -36,6 +37,9 @@ class NativeSpeechRepository(
 
     // Store original system volume to restore later
     private var originalSystemVolume = -1
+    private var pendingStart: Runnable? = null
+    private var lastStartAtMs = 0L
+    private val minStartGapMs = 220L
 
     // ── Volume control — instant setStreamVolume(0) not ADJUST_MUTE ──
 
@@ -128,9 +132,11 @@ class NativeSpeechRepository(
             putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            // Long timeout — fewer restarts = fewer beep opportunities
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 8000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 6000L)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+            // Balanced timeout for smoother conversational turn-taking
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
         }
 
@@ -151,7 +157,7 @@ class NativeSpeechRepository(
 
     fun restartListening(language: String = "en-US") {
         currentLanguage = language
-        mainHandler.post { startRecognition(language) }
+        mainHandler.post { scheduleStartRecognition(language) }
     }
 
     fun forceRestartListening(language: String = "en-US") {
@@ -162,7 +168,7 @@ class NativeSpeechRepository(
                 speechRecognizer?.cancel()
                 isRecognitionActive = false
             }
-            mainHandler.postDelayed({ startRecognition(language) }, 150)
+            mainHandler.postDelayed({ scheduleStartRecognition(language) }, 150)
         }
     }
 
@@ -171,6 +177,26 @@ class NativeSpeechRepository(
     }
 
     private fun startRecognition(language: String) {
+        scheduleStartRecognition(language)
+    }
+
+    private fun scheduleStartRecognition(language: String) {
+        pendingStart?.let { mainHandler.removeCallbacks(it) }
+        val now = SystemClock.elapsedRealtime()
+        val waitMs = (minStartGapMs - (now - lastStartAtMs)).coerceAtLeast(0L)
+        val task = Runnable {
+            pendingStart = null
+            startRecognitionNow(language)
+        }
+        pendingStart = task
+        if (waitMs == 0L) {
+            task.run()
+        } else {
+            mainHandler.postDelayed(task, waitMs)
+        }
+    }
+
+    private fun startRecognitionNow(language: String) {
         val recognizer = getOrCreateRecognizer() ?: run {
             _results.tryEmit(SpeechResult.Error("Not available"))
             return
@@ -181,6 +207,7 @@ class NativeSpeechRepository(
         }
         // Silence BEFORE startListening — this is what prevents the beep
         silenceSystem()
+        lastStartAtMs = SystemClock.elapsedRealtime()
         recognizer.startListening(buildIntent(language))
     }
 
@@ -191,6 +218,10 @@ class NativeSpeechRepository(
                 speechRecognizer?.stopListening()
                 isRecognitionActive = false
             }
+            pendingStart?.let {
+                mainHandler.removeCallbacks(it)
+                pendingStart = null
+            }
             mainHandler.postDelayed({ restoreSystem() }, 500)
         }
     }
@@ -200,6 +231,10 @@ class NativeSpeechRepository(
             if (isRecognitionActive) {
                 speechRecognizer?.cancel()
                 isRecognitionActive = false
+            }
+            pendingStart?.let {
+                mainHandler.removeCallbacks(it)
+                pendingStart = null
             }
             speechRecognizer?.destroy()
             speechRecognizer = null
