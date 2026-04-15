@@ -71,51 +71,49 @@ colors = listOf(Color(0xFF2E003E), Color(0xFF000000))
 )
 )
 ) {
-// 1. Top Bar
-Row(
-modifier = Modifier
-.fillMaxWidth()
-.statusBarsPadding()
-.padding(16.dp),
-horizontalArrangement = Arrangement.SpaceBetween,
-verticalAlignment = Alignment.CenterVertically
-) {
-IconButton(onClick = onBackClick) {
-Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
-}
-Surface(
-shape = RoundedCornerShape(20.dp),
-color = Color.White.copy(alpha = 0.1f),
-modifier = Modifier.clickable { /* Switch to chat */ }
-) {
-Row(
-modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-verticalAlignment = Alignment.CenterVertically
-) {
-Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-Spacer(modifier = Modifier.width(6.dp))
-Text("Go To Chat", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-}
-}
-}
-
-    // 2. Avatar & Timer
+    // TOP SECTION — nav bar + avatar + timer + autocorrect toggle
     Column(
         modifier = Modifier
+            .fillMaxWidth()
             .align(Alignment.TopCenter)
-            .padding(top = 100.dp),
+            .statusBarsPadding()
+            .padding(top = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBackClick) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+            }
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = Color.White.copy(alpha = 0.1f),
+                modifier = Modifier.clickable { /* Switch to chat */ }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Go To Chat", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
         AiAvatarHeader(
             isSpeaking = uiState.isAiSpeaking,
-            modifier = Modifier.size(140.dp)
+            modifier = Modifier.size(100.dp)
         )
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         Text("Ongoing call", color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp)
         Spacer(modifier = Modifier.height(4.dp))
         CallTimer()
-        Spacer(modifier = Modifier.height(16.dp))
-
+        Spacer(modifier = Modifier.height(8.dp))
         // Auto-correct Toggle Button
         Surface(
             shape = RoundedCornerShape(20.dp),
@@ -142,18 +140,22 @@ Text("Go To Chat", color = Color.White, fontSize = 12.sp, fontWeight = FontWeigh
             }
         }
     }
-    // 3. Bottom Controls
+    // BOTTOM SECTION — bubbles + buttons
     Column(
         modifier = Modifier
+            .fillMaxWidth()
             .align(Alignment.BottomCenter)
             .padding(bottom = 40.dp, start = 20.dp, end = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // --- LIVE TRANSCRIPT BUBBLE ---
         val lastMessage = uiState.messages.lastOrNull()
-        val conversationalMessage = uiState.messages.lastOrNull { 
-            it.role == com.supereva.fluentai.domain.session.model.TurnRole.AI && it.score == null 
-        }
+        val conversationalMessage = uiState.messages
+            .filter {
+                it.role == com.supereva.fluentai.domain.session.model.TurnRole.AI &&
+                it.score == null
+            }
+            .lastOrNull()
         
         // True ONLY if the absolute last message in the list is the new conversational reply
         val isNewAiMessageStreaming = uiState.isAiSpeaking && 
@@ -172,6 +174,17 @@ Text("Go To Chat", color = Color.White, fontSize = 12.sp, fontWeight = FontWeigh
             // 1. TOP BOX: ALWAYS show the AI's challenge/transcript if it exists
             if (conversationalMessage != null && conversationalMessage.transcript.isNotBlank()) {
                 val challengeText = conversationalMessage.transcript.trim()
+                val displayText = if (
+                    challengeText.contains("\n\n") &&
+                    (challengeText.startsWith("That is incorrect") ||
+                     challengeText.startsWith("Incorrect!") ||
+                     challengeText.startsWith("That is correct") ||
+                     challengeText.startsWith("Great job!"))
+                ) {
+                    challengeText.substringAfter("\n\n").trim()
+                } else {
+                    challengeText
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -183,28 +196,18 @@ Text("Go To Chat", color = Color.White, fontSize = 12.sp, fontWeight = FontWeigh
                         modifier = Modifier.align(Alignment.Center)
                     ) {
                         Text(
-                            text = challengeText,
+                            text = displayText,
                             color = Color.White,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Medium,
                             textAlign = TextAlign.Center
                         )
-                        // Show the correct translation below challenge in grey after evaluation
-                        if (uiState.lastCorrectAnswer != null) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "→ ${uiState.lastCorrectAnswer}",
-                                color = Color.White.copy(alpha = 0.5f),
-                                fontSize = 14.sp,
-                                textAlign = TextAlign.Center
-                            )
-                        }
                     }
                 }
             }
 
-            // 2. CORRECT ANSWER BUBBLE: Show after evaluation
-            if (uiState.lastCorrectAnswer != null) {
+            // 2. CORRECT ANSWER BUBBLE: Show after evaluation (only when autocorrect is ON)
+            if (uiState.lastCorrectAnswer != null && uiState.isAutocorrectEnabled) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -389,46 +392,94 @@ Text(text = formatted, color = Color.White, fontSize = 32.sp, fontWeight = FontW
 
 @Composable
 fun CallActionButton(
-isRecording: Boolean,
-isAiSpeaking: Boolean,
-onClick: () -> Unit
+    isRecording: Boolean,
+    isAiSpeaking: Boolean,
+    onClick: () -> Unit
 ) {
-val backgroundColor = when {
-isRecording -> Color(0xFF00C853) // Vibrant Green
-isAiSpeaking -> Color.White.copy(alpha = 0.15f)
-else -> Color(0xFFFF9800)
-}
-val icon = when {
-isRecording -> Icons.Default.GraphicEq // Waveform/Pause look
-isAiSpeaking -> Icons.Default.MicOff
-else -> Icons.Default.Mic
-}
+    val backgroundColor = when {
+        isRecording -> Color(0xFF00C853)
+        isAiSpeaking -> Color.White.copy(alpha = 0.15f)
+        else -> Color(0xFFFF9800)
+    }
 
-// Pulse Animation
-val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-val scale by infiniteTransition.animateFloat(
-    initialValue = 1f,
-    targetValue = if (isRecording) 1.15f else 1f,
-    animationSpec = infiniteRepeatable(
-        animation = tween(1000),
-        repeatMode = RepeatMode.Reverse
-    ),
-    label = "scale"
-)
-Box(
-    contentAlignment = Alignment.Center,
-    modifier = Modifier
-        .size(80.dp)
-        .scale(scale)
-        .clip(CircleShape)
-        .background(backgroundColor)
-        .clickable { onClick() }
-) {
-    Icon(
-        imageVector = icon,
-        contentDescription = null,
-        tint = Color.White,
-        modifier = Modifier.size(36.dp)
+    val infiniteTransition = rememberInfiniteTransition(label = "mic")
+
+    val outerPulse by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = if (isRecording) 1.25f else 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "outer"
     )
-}
+
+    val innerPulse by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = if (isRecording) 1.1f else 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "inner"
+    )
+
+    Box(contentAlignment = Alignment.Center) {
+        // Outer glow ring — only when recording
+        if (isRecording) {
+            Box(
+                modifier = Modifier
+                    .size(80.dp)
+                    .scale(outerPulse)
+                    .clip(CircleShape)
+                    .background(Color(0xFF00C853).copy(alpha = 0.25f))
+            )
+        }
+
+        // Main button
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(72.dp)
+                .scale(if (isRecording) innerPulse else 1f)
+                .clip(CircleShape)
+                .background(backgroundColor)
+                .clickable { onClick() }
+        ) {
+            if (isRecording) {
+                // Animated waveform bars
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    listOf(0, 150, 75).forEachIndexed { index, offsetMs ->
+                        val barHeight by infiniteTransition.animateFloat(
+                            initialValue = 8f,
+                            targetValue = 28f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(400 + index * 100, easing = FastOutSlowInEasing),
+                                repeatMode = RepeatMode.Reverse,
+                                initialStartOffset = StartOffset(offsetMs)
+                            ),
+                            label = "bar$index"
+                        )
+                        Box(
+                            modifier = Modifier
+                                .width(4.dp)
+                                .height(barHeight.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(Color.White)
+                        )
+                    }
+                }
+            } else {
+                Icon(
+                    imageVector = if (isAiSpeaking) Icons.Default.MicOff else Icons.Default.Mic,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(32.dp)
+                )
+            }
+        }
+    }
 }

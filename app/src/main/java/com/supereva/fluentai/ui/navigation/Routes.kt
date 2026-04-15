@@ -21,6 +21,9 @@ data object HomeRoute
 data object TranslationRoute
 
 @Serializable
+data object LearnRoute
+
+@Serializable
 data object MembershipRoute
 
 @Serializable
@@ -50,6 +53,12 @@ data class SpeakingSessionRoute(
 
 @Serializable
 data class LanguagePickerRoute(val isSource: Boolean)
+
+@Serializable
+data class LessonRoute(val lessonId: String)
+
+@Serializable
+data object MenuRoute
 
 // ── Graph-level route markers (used for nested nav graphs) ──────────────
 

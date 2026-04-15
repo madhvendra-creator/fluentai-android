@@ -18,7 +18,9 @@ import com.supereva.fluentai.ui.home.HomeScreen
  */
 fun NavGraphBuilder.bottomNavGraph(
     onNavigateToSession: (topicId: String) -> Unit,
-    onNavigateToActiveTranslation: () -> Unit
+    onNavigateToActiveTranslation: () -> Unit,
+    onNavigateToLesson: (lessonId: String) -> Unit,
+    onNavigateToMenu: () -> Unit
 ) {
     navigation<BottomNavGraphRoute>(startDestination = HomeRoute) {
 
@@ -34,12 +36,20 @@ fun NavGraphBuilder.bottomNavGraph(
             )
         }
 
+        composable<LearnRoute> {
+            com.supereva.fluentai.ui.learn.LearnScreen(
+                onNavigateToLesson = onNavigateToLesson
+            )
+        }
+
         composable<ProgressRoute> {
             com.supereva.fluentai.ui.progress.ProgressScreen()
         }
 
         composable<MembershipRoute> {
-            PlaceholderScreen(title = "Membership")
+            com.supereva.fluentai.ui.membership.MembershipScreen(
+                onProfileClick = onNavigateToMenu
+            )
         }
     }
 }
